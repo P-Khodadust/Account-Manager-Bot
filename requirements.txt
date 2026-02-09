@@ -1,0 +1,11 @@
+aiogram==3.15.0
+telethon==1.37.0
+pyrogram==2.0.106
+tgcrypto==1.2.5
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+phonenumbers==8.13.50
+python-dotenv==1.0.1
+python-socks[asyncio]==2.7.1
+aiohttp[speedups]==3.11.11
+cryptography==44.0.0
