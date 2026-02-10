@@ -4,8 +4,12 @@ Account addition flow:
   2. Bot asks for phone number
   3. Bot sends login code via Telegram API
   4. User provides login code
-  5. If 2FA → bot asks for password
+  5. If 2FA -> bot asks for password
   6. Account saved to database
+
+Proxy rotation: uses get_active_proxy() so the rotation counter
+determines which proxy is used.  After a successful account save
+the counter is incremented.
 """
 
 from __future__ import annotations
@@ -40,14 +44,18 @@ class AddAccountStates(StatesGroup):
 
 @router.callback_query(F.data == "add_account")
 @authorized
-async def cb_add_account(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_add_account(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
     await state.clear()
     await callback.message.edit_text(
-        "🔑 <b>Grant Account Access</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "\U0001f511 <b>Grant Account Access</b>\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+        "\u2501\u2501\u2501\u2501\n\n"
         "Please send the <b>phone number</b> of the\n"
         "Telegram account you want to add.\n\n"
-        "📝 <i>Format: +1234567890 (with country code)</i>",
+        "\U0001f4dd <i>Format: +1234567890 (with country code)</i>",
         parse_mode="HTML",
         reply_markup=cancel_kb(),
     )
@@ -65,7 +73,8 @@ async def on_phone_received(message: Message, state: FSMContext) -> None:
     # Basic validation
     if not phone.startswith("+") or len(phone) < 8:
         await message.answer(
-            "⚠️ Please enter a valid phone number starting with <b>+</b>\n"
+            "\u26a0\ufe0f Please enter a valid phone number starting "
+            "with <b>+</b>\n"
             "Example: <code>+14155552671</code>",
             parse_mode="HTML",
             reply_markup=cancel_kb(),
@@ -77,20 +86,24 @@ async def on_phone_received(message: Message, state: FSMContext) -> None:
     display_phone = format_phone_display(phone)
 
     await message.answer(
-        f"📱 Phone: <b>{display_phone}</b>\n"
-        f"🌍 Country: <b>{country}</b>\n\n"
-        f"⏳ Sending login code...",
+        f"\U0001f4f1 Phone: <b>{display_phone}</b>\n"
+        f"\U0001f30d Country: <b>{country}</b>\n\n"
+        f"\u23f3 Sending login code\u2026",
         parse_mode="HTML",
     )
 
-    # Get user's proxy
-    proxy = await db.get_default_proxy(message.from_user.id)
+    # Get user's proxy (rotation-aware)
+    proxy = await db.get_active_proxy(message.from_user.id)
 
     # Request login code
     client, result = await request_code(phone, proxy=proxy)
 
     if result.error:
-        await message.answer(result.error, parse_mode="HTML", reply_markup=cancel_kb())
+        await message.answer(
+            result.error,
+            parse_mode="HTML",
+            reply_markup=cancel_kb(),
+        )
         await state.clear()
         return
 
@@ -100,21 +113,17 @@ async def on_phone_received(message: Message, state: FSMContext) -> None:
             phone=phone,
             country=country,
             phone_code_hash=result.phone_code_hash,
-            # We can't serialize the client, so we store the session
-            # and reconnect when needed
         )
-        # Keep client reference in memory via state
-        # We'll store the string session of the pending client
+        # Save the pending session string so we can reconnect later
         pending_session = client.session.save()
         await state.update_data(pending_session=pending_session)
-
         await client.disconnect()
 
         await message.answer(
-            "✅ <b>Login code sent!</b>\n\n"
-            "📨 Please enter the login code you received\n"
+            "\u2705 <b>Login code sent!</b>\n\n"
+            "\U0001f4e8 Please enter the login code you received\n"
             "in Telegram on that account.\n\n"
-            "💡 <i>The code is usually 5 digits.</i>",
+            "\U0001f4a1 <i>The code is usually 5 digits.</i>",
             parse_mode="HTML",
             reply_markup=cancel_kb(),
         )
@@ -122,7 +131,7 @@ async def on_phone_received(message: Message, state: FSMContext) -> None:
     else:
         await client.disconnect()
         await message.answer(
-            "❌ Unexpected error. Please try again.",
+            "\u274c Unexpected error. Please try again.",
             reply_markup=cancel_kb(),
         )
         await state.clear()
@@ -142,10 +151,8 @@ async def on_code_received(message: Message, state: FSMContext) -> None:
 
     # Reconnect client with the pending session
     from bot.utils.session_manager import create_client
-    from telethon.sessions import StringSession
 
-    proxy = await db.get_default_proxy(message.from_user.id)
-
+    proxy = await db.get_active_proxy(message.from_user.id)
     client = create_client(session=pending_session, proxy=proxy)
     await client.connect()
 
@@ -154,7 +161,8 @@ async def on_code_received(message: Message, state: FSMContext) -> None:
     if result.error:
         await client.disconnect()
         await message.answer(
-            f"{result.error}\n\nPlease enter the code again or /start to cancel.",
+            f"{result.error}\n\n"
+            "Please enter the code again or /start to cancel.",
             parse_mode="HTML",
             reply_markup=cancel_kb(),
         )
@@ -167,8 +175,10 @@ async def on_code_received(message: Message, state: FSMContext) -> None:
         await client.disconnect()
 
         await message.answer(
-            "🔐 <b>Two-Factor Authentication</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "\U0001f510 <b>Two-Factor Authentication</b>\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+            "\u2501\u2501\u2501\u2501\n\n"
             "This account has 2FA enabled.\n"
             "Please enter your <b>cloud password</b>.",
             parse_mode="HTML",
@@ -184,7 +194,7 @@ async def on_code_received(message: Message, state: FSMContext) -> None:
 
     await client.disconnect()
     await message.answer(
-        "❌ An unexpected error occurred. Please try again.",
+        "\u274c An unexpected error occurred. Please try again.",
         reply_markup=cancel_kb(),
     )
     await state.clear()
@@ -199,9 +209,10 @@ async def on_2fa_received(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     pending_session = data.get("pending_session")
 
-    proxy = await db.get_default_proxy(message.from_user.id)
+    proxy = await db.get_active_proxy(message.from_user.id)
 
     from bot.utils.session_manager import create_client
+
     client = create_client(session=pending_session, proxy=proxy)
     await client.connect()
 
@@ -221,7 +232,7 @@ async def on_2fa_received(message: Message, state: FSMContext) -> None:
         return
 
     await message.answer(
-        "❌ An unexpected error occurred. Please try again.",
+        "\u274c An unexpected error occurred. Please try again.",
         reply_markup=cancel_kb(),
     )
     await state.clear()
@@ -229,7 +240,9 @@ async def on_2fa_received(message: Message, state: FSMContext) -> None:
 
 # ── Save account to database ────────────────────────────────────────
 
-async def _save_account(message: Message, state: FSMContext, result) -> None:
+async def _save_account(
+    message: Message, state: FSMContext, result
+) -> None:
     data = await state.get_data()
     phone = data["phone"]
     country = data["country"]
@@ -241,38 +254,66 @@ async def _save_account(message: Message, state: FSMContext, result) -> None:
             phone=phone,
             country=country,
             session_string=result.session_string,
-            tg_user_id=result.user_info.get("id") if result.user_info else None,
-            first_name=result.user_info.get("first_name") if result.user_info else None,
-            username=result.user_info.get("username") if result.user_info else None,
+            tg_user_id=(
+                result.user_info.get("id") if result.user_info else None
+            ),
+            first_name=(
+                result.user_info.get("first_name")
+                if result.user_info
+                else None
+            ),
+            username=(
+                result.user_info.get("username")
+                if result.user_info
+                else None
+            ),
         )
 
-        name = result.user_info.get("first_name", "") if result.user_info else ""
-        username = result.user_info.get("username", "") if result.user_info else ""
+        # Increment proxy rotation counter after successful save
+        await db.increment_rotation_counter(message.from_user.id)
+
+        name = (
+            result.user_info.get("first_name", "")
+            if result.user_info
+            else ""
+        )
+        username = (
+            result.user_info.get("username", "")
+            if result.user_info
+            else ""
+        )
         uname_str = f" (@{username})" if username else ""
 
         is_admin = await db.is_user_admin(message.from_user.id)
         await message.answer(
-            "✅ <b>Account Added Successfully!</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📱  Phone: <b>{display_phone}</b>\n"
-            f"👤  Name: <b>{name}{uname_str}</b>\n"
-            f"🌍  Country: <b>{country}</b>\n"
-            f"📅  Date: <b>{account.date_added.strftime('%B %d, %Y')}</b>\n\n"
+            "\u2705 <b>Account Added Successfully!</b>\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+            "\u2501\u2501\u2501\u2501\n\n"
+            f"\U0001f4f1  Phone: <b>{display_phone}</b>\n"
+            f"\U0001f464  Name: <b>{name}{uname_str}</b>\n"
+            f"\U0001f30d  Country: <b>{country}</b>\n"
+            f"\U0001f4c5  Date: "
+            f"<b>{account.date_added.strftime('%B %d, %Y')}</b>\n\n"
             "The account has been saved and categorized.",
             parse_mode="HTML",
             reply_markup=main_menu_kb(is_admin),
         )
     except Exception as e:
         logger.exception("Failed to save account")
-        if "uq_owner_phone" in str(e).lower() or "unique" in str(e).lower():
+        if (
+            "uq_owner_phone" in str(e).lower()
+            or "unique" in str(e).lower()
+        ):
             await message.answer(
-                "⚠️ This phone number is already in your account list.",
+                "\u26a0\ufe0f This phone number is already in your "
+                "account list.",
                 parse_mode="HTML",
                 reply_markup=cancel_kb(),
             )
         else:
             await message.answer(
-                f"❌ Error saving account: {e}",
+                f"\u274c Error saving account: {e}",
                 parse_mode="HTML",
                 reply_markup=cancel_kb(),
             )

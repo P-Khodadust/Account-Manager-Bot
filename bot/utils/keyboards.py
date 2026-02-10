@@ -1,9 +1,5 @@
 """
-Inline keyboard builders — glass-style buttons with emojis.
-
-Glass-style = we use subtle emoji accents + clean text to give a modern feel.
-Telegram doesn't support actual translucent buttons, so we rely on
-well-chosen emoji + clean layout to evoke the aesthetic.
+Inline keyboard builders — glass-style design with emojis.
 """
 
 from __future__ import annotations
@@ -13,284 +9,261 @@ from typing import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-_FLAG_MAP: dict[str, str] = {
-    "USA": "🇺🇸",
-    "Canada": "🇨🇦",
-    "Iran": "🇮🇷",
-    "United Kingdom": "🇬🇧",
-    "Germany": "🇩🇪",
-    "France": "🇫🇷",
-    "Turkey": "🇹🇷",
-    "Russia": "🇷🇺",
-    "India": "🇮🇳",
-    "China": "🇨🇳",
-    "Japan": "🇯🇵",
-    "Brazil": "🇧🇷",
-    "Australia": "🇦🇺",
-    "Italy": "🇮🇹",
-    "Spain": "🇪🇸",
-    "Netherlands": "🇳🇱",
-    "South Korea": "🇰🇷",
-    "UAE": "🇦🇪",
-    "Saudi Arabia": "🇸🇦",
-    "Ukraine": "🇺🇦",
-    "Poland": "🇵🇱",
-    "Mexico": "🇲🇽",
-    "Indonesia": "🇮🇩",
-    "Egypt": "🇪🇬",
-    "Pakistan": "🇵🇰",
-    "Nigeria": "🇳🇬",
-    "Argentina": "🇦🇷",
-    "Colombia": "🇨🇴",
-    "Thailand": "🇹🇭",
-    "Vietnam": "🇻🇳",
-    "Philippines": "🇵🇭",
-    "Malaysia": "🇲🇾",
-    "Singapore": "🇸🇬",
-    "Sweden": "🇸🇪",
-    "Norway": "🇳🇴",
-    "Denmark": "🇩🇰",
-    "Finland": "🇫🇮",
-    "Switzerland": "🇨🇭",
-    "Austria": "🇦🇹",
-    "Belgium": "🇧🇪",
-    "Portugal": "🇵🇹",
-    "Ireland": "🇮🇪",
-    "Greece": "🇬🇷",
-    "Czech Republic": "🇨🇿",
-    "Romania": "🇷🇴",
-    "Hungary": "🇭🇺",
-    "Israel": "🇮🇱",
-    "Iraq": "🇮🇶",
-    "Lebanon": "🇱🇧",
-    "Jordan": "🇯🇴",
-    "Kuwait": "🇰🇼",
-    "Qatar": "🇶🇦",
-    "Bahrain": "🇧🇭",
-    "Oman": "🇴🇲",
-    "Afghanistan": "🇦🇫",
-    "Bangladesh": "🇧🇩",
-    "Sri Lanka": "🇱🇰",
-    "Myanmar": "🇲🇲",
-    "New Zealand": "🇳🇿",
-    "Chile": "🇨🇱",
-    "Peru": "🇵🇪",
-    "Venezuela": "🇻🇪",
-    "Cuba": "🇨🇺",
-    "South Africa": "🇿🇦",
-    "Kenya": "🇰🇪",
-    "Morocco": "🇲🇦",
-    "Algeria": "🇩🇿",
-    "Tunisia": "🇹🇳",
-    "Taiwan": "🇹🇼",
-    "Georgia": "🇬🇪",
-    "Azerbaijan": "🇦🇿",
-    "Uzbekistan": "🇺🇿",
-    "Kazakhstan": "🇰🇿",
-    "Serbia": "🇷🇸",
-    "Croatia": "🇭🇷",
-}
-
-
-def _flag(country: str) -> str:
-    return _FLAG_MAP.get(country, "🌍")
-
 
 def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
+    """Shortcut for creating an inline button."""
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
-def _back_btn(callback_data: str = "main_menu") -> InlineKeyboardButton:
-    return InlineKeyboardButton(text="◀️ Back", callback_data=callback_data)
-
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Main menu
+# Main Menu
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
-    rows = [
-        [_btn("🔑  Grant Account Access", "add_account")],
-        [_btn("📊  Statistics", "statistics")],
-        [_btn("📦  Deliver Accounts", "deliver_menu")],
-        [_btn("🌐  Proxy Settings", "proxy_menu")],
+    buttons = [
+        [_btn("\U0001f511  Grant Account Access", "add_account")],
+        [
+            _btn("\U0001f4ca  Statistics", "statistics"),
+            _btn("\U0001f4e6  Deliver", "deliver_menu"),
+        ],
+        [_btn("\U0001f310  Proxy Settings", "proxy_menu")],
     ]
     if is_admin:
-        rows.append([_btn("👤  Manage Users", "manage_users")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        buttons.append(
+            [_btn("\U0001f464  Manage Users", "manage_users")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Country selection
+# Generic / Utility
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def country_select_kb(
-    countries: Sequence[str],
-    prefix: str = "country",
-    back_cb: str = "main_menu",
-) -> InlineKeyboardMarkup:
-    rows = []
-    for c in countries:
-        rows.append([_btn(f"{_flag(c)}  {c}", f"{prefix}:{c}")])
-    rows.append([_back_btn(back_cb)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def cancel_kb(back_cb: str | None = None) -> InlineKeyboardMarkup:
+    cb = back_cb or "main_menu"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_btn("\u274c  Cancel", cb)]]
+    )
+
+
+def confirm_kb(yes_cb: str, no_cb: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\u2705  Yes", yes_cb), _btn("\u274c  No", no_cb)]
+        ]
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Date selection
+# User Management
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def date_select_kb(
-    dates: Sequence[_dt.date],
-    prefix: str = "date",
-    back_cb: str = "main_menu",
-    counts: dict[str, int] | None = None,
-) -> InlineKeyboardMarkup:
-    rows = []
-    for d in dates:
-        d_val = d
-        if isinstance(d, _dt.datetime):
-            d_val = d.date()
-        label = d_val.strftime("%B %d, %Y")
-        iso = d_val.isoformat()
-        count_str = f"  ({counts[iso]})" if counts and iso in counts else ""
-        rows.append([_btn(f"📅  {label}{count_str}", f"{prefix}:{iso}")])
-    rows.append([_back_btn(back_cb)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def manage_users_kb(users) -> InlineKeyboardMarkup:
+    buttons = []
+    for u in users:
+        admin_badge = " \U0001f451" if u.is_admin else ""
+        buttons.append(
+            [
+                _btn(
+                    f"\U0001f194 {u.telegram_id}{admin_badge}",
+                    f"user_view:{u.telegram_id}",
+                )
+            ]
+        )
+    buttons.append([_btn("\u2795  Add User", "user_add")])
+    buttons.append([_btn("\U0001f519  Back", "main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def user_detail_kb(telegram_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f5d1  Remove User", f"user_remove:{telegram_id}")],
+            [_btn("\U0001f519  Back", "manage_users")],
+        ]
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Account list
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-def account_list_kb(
-    accounts: list,
-    prefix: str = "acc",
-    back_cb: str = "main_menu",
-) -> InlineKeyboardMarkup:
-    rows = []
-    for acc in accounts:
-        label = f"📱  {acc.phone}"
-        if acc.first_name:
-            label += f"  ({acc.first_name})"
-        rows.append([_btn(label, f"{prefix}:{acc.id}")])
-    rows.append([_back_btn(back_cb)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Account actions (after selecting for delivery)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-def account_actions_kb(account_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("🔄  Resend Code", f"resend_code:{account_id}")],
-        [_btn("🚪  Log Out of Account", f"logout_acc:{account_id}")],
-        [_back_btn("deliver_menu")],
-    ])
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Deliver menu
+# Delivery
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 def deliver_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("📱  Individual Account", "deliver_individual")],
-        [_btn("📁  Bulk Session Files", "deliver_bulk")],
-        [_back_btn("main_menu")],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f4f1  Individual Delivery", "deliver_individual")],
+            [_btn("\U0001f4c1  Bulk Session Files", "deliver_bulk")],
+            [_btn("\U0001f519  Back", "main_menu")],
+        ]
+    )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Session format selection
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def country_select_kb(
+    countries: list[str],
+    prefix: str = "country",
+    back_cb: str = "main_menu",
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for c in countries:
+        buttons.append([_btn(f"\U0001f30d  {c}", f"{prefix}:{c}")])
+    buttons.append([_btn("\U0001f519  Back", back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def date_select_kb(
+    dates,
+    prefix: str = "date",
+    back_cb: str = "main_menu",
+    counts: dict | None = None,
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for d in dates:
+        if isinstance(d, _dt.datetime):
+            d = d.date()
+        label = d.strftime("%B %d, %Y")
+        iso = d.isoformat()
+        count_str = f"  ({counts[iso]})" if counts and iso in counts else ""
+        buttons.append(
+            [_btn(f"\U0001f4c5  {label}{count_str}", f"{prefix}:{iso}")]
+        )
+    buttons.append([_btn("\U0001f519  Back", back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def account_list_kb(
+    accounts,
+    prefix: str = "acc",
+    back_cb: str = "main_menu",
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for acc in accounts:
+        phone = acc.phone
+        name = f" \u2014 {acc.first_name}" if acc.first_name else ""
+        buttons.append(
+            [_btn(f"\U0001f4f1  {phone}{name}", f"{prefix}:{acc.id}")]
+        )
+    buttons.append([_btn("\U0001f519  Back", back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def session_format_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("📗  Telethon Session", "bulk_format:telethon")],
-        [_btn("📘  Pyrogram Session", "bulk_format:pyrogram")],
-        [_back_btn("deliver_menu")],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f4f1  Telethon Session", "bulk_format:telethon")],
+            [_btn("\U0001f4f1  Pyrogram Session", "bulk_format:pyrogram")],
+            [_btn("\U0001f519  Back", "deliver_menu")],
+        ]
+    )
+
+
+# ── Individual Delivery Keyboards ────────────────────────────────────
+
+
+def listening_kb(account_id: int) -> InlineKeyboardMarkup:
+    """Keyboard shown while the bot listens for login codes."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f504  Restart Listener", f"resend_code:{account_id}")],
+            [
+                _btn(
+                    "\U0001f6aa  Log Out of Account",
+                    f"logout_acc:{account_id}",
+                )
+            ],
+            [_btn("\u274c  Cancel", "deliver_menu")],
+        ]
+    )
+
+
+def code_received_kb(account_id: int) -> InlineKeyboardMarkup:
+    """Keyboard shown after a login code is captured."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f504  Listen Again", f"resend_code:{account_id}")],
+            [
+                _btn(
+                    "\U0001f6aa  Log Out of Account",
+                    f"logout_acc:{account_id}",
+                )
+            ],
+            [_btn("\U0001f519  Back to Menu", "deliver_menu")],
+        ]
+    )
+
+
+def account_actions_kb(account_id: int) -> InlineKeyboardMarkup:
+    """General account action buttons."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f504  Resend Code", f"resend_code:{account_id}")],
+            [
+                _btn(
+                    "\U0001f6aa  Log Out of Account",
+                    f"logout_acc:{account_id}",
+                )
+            ],
+            [_btn("\U0001f519  Back to Menu", "deliver_menu")],
+        ]
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Proxy menu
+# Proxy Management
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def proxy_menu_kb(proxies: list | None = None) -> InlineKeyboardMarkup:
-    rows = [
-        [_btn("➕  Add Proxy", "proxy_add")],
-    ]
-    if proxies:
-        for p in proxies:
-            default = " ✅" if p.is_default else ""
-            label = p.label or f"{p.host}:{p.port}"
-            rows.append([_btn(f"🔹  {label}{default}", f"proxy_view:{p.id}")])
-    rows.append([_back_btn("main_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def proxy_menu_kb(
+    proxies,
+    rotation_enabled: bool = False,
+    proxy_count: int = 0,
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for p in proxies:
+        default_mark = "\u2705 " if p.is_default else ""
+        buttons.append(
+            [
+                _btn(
+                    f"{default_mark}\U0001f310 {p.host}:{p.port}",
+                    f"proxy_view:{p.id}",
+                )
+            ]
+        )
+    buttons.append([_btn("\u2795  Add Proxy", "proxy_add")])
+
+    # Rotation toggle
+    if proxy_count >= 2:
+        status = "ON \u2705" if rotation_enabled else "OFF"
+        buttons.append(
+            [
+                _btn(
+                    f"\U0001f504  Change proxy every 3 accounts: {status}",
+                    "proxy_rotation_toggle",
+                )
+            ]
+        )
+    else:
+        buttons.append(
+            [
+                _btn(
+                    "\U0001f504  Change proxy every 3 accounts (need 2+ proxies)",
+                    "proxy_rotation_disabled",
+                )
+            ]
+        )
+
+    buttons.append([_btn("\U0001f519  Back", "main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def proxy_detail_kb(proxy_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("⭐  Set as Default", f"proxy_default:{proxy_id}")],
-        [_btn("🗑  Delete Proxy", f"proxy_delete:{proxy_id}")],
-        [_back_btn("proxy_menu")],
-    ])
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# User management
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-def manage_users_kb(users: list | None = None) -> InlineKeyboardMarkup:
-    rows = [
-        [_btn("➕  Add User", "user_add")],
-    ]
-    if users:
-        for u in users:
-            tag = "👑" if u.is_admin else "👤"
-            label = u.label or str(u.telegram_id)
-            rows.append([_btn(f"{tag}  {label} ({u.telegram_id})", f"user_view:{u.telegram_id}")])
-    rows.append([_back_btn("main_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def user_detail_kb(telegram_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("🗑  Remove User", f"user_remove:{telegram_id}")],
-        [_back_btn("manage_users")],
-    ])
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Confirmation
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-def confirm_kb(yes_cb: str, no_cb: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            _btn("✅  Yes", yes_cb),
-            _btn("❌  No", no_cb),
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\u2705  Set as Default", f"proxy_default:{proxy_id}")],
+            [_btn("\U0001f5d1  Delete Proxy", f"proxy_delete:{proxy_id}")],
+            [_btn("\U0001f519  Back", "proxy_menu")],
         ]
-    ])
-
-
-def cancel_kb(cb: str = "main_menu") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("❌  Cancel", cb)],
-    ])
+    )

@@ -1,54 +1,49 @@
 """
-Database models and async session factory.
+Database layer — SQLAlchemy async with aiosqlite.
 
-Tables
-------
-- authorized_users  – whitelist of Telegram user IDs allowed to use the bot
-- accounts          – stored Telegram accounts (per owner user)
-- proxies           – SOCKS5 proxy configs (per user)
+Models: AuthorizedUser, Account, Proxy, UserSettings
 """
 
 from __future__ import annotations
 
-import datetime as _dt
+import logging
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Column,
     Date,
     DateTime,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    and_,
+    delete,
     func,
     select,
-    delete,
+    update,
 )
 from sqlalchemy.ext.asyncio import (
-    AsyncAttrs,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    relationship,
-)
+from sqlalchemy.orm import DeclarativeBase
 
 from bot.config import DATABASE_URL
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Engine & session
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-engine = create_async_engine(DATABASE_URL, echo=False)
-async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+logger = logging.getLogger(__name__)
 
 
-class Base(AsyncAttrs, DeclarativeBase):
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ORM Base
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class Base(DeclarativeBase):
     pass
 
 
@@ -58,40 +53,30 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 
 class AuthorizedUser(Base):
-    """Users allowed to interact with the bot."""
-
     __tablename__ = "authorized_users"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
-    added_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    added_at: Mapped[_dt.datetime] = mapped_column(
-        DateTime, server_default=func.now()
-    )
-    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
-    label: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    is_admin = Column(Boolean, default=False)
+    added_by = Column(BigInteger, nullable=True)
+    label = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Account(Base):
-    """A stored Telegram account belonging to a bot user."""
-
     __tablename__ = "accounts"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
-    phone: Mapped[str] = mapped_column(String(32), nullable=False)
-    country: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    date_added: Mapped[_dt.date] = mapped_column(
-        Date, default=_dt.date.today
-    )
-    session_string: Mapped[str] = mapped_column(Text, nullable=False)
-    tg_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    first_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[_dt.datetime] = mapped_column(
-        DateTime, server_default=func.now()
-    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(BigInteger, nullable=False, index=True)
+    phone = Column(String(32), nullable=False)
+    country = Column(String(64), nullable=False)
+    date_added = Column(Date, default=date.today)
+    session_string = Column(Text, nullable=False)
+    tg_user_id = Column(BigInteger, nullable=True)
+    first_name = Column(String(255), nullable=True)
+    username = Column(String(255), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("owner_id", "phone", name="uq_owner_phone"),
@@ -99,56 +84,78 @@ class Account(Base):
 
 
 class Proxy(Base):
-    """SOCKS5 proxy configuration per user."""
-
     __tablename__ = "proxies"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    label: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    host: Mapped[str] = mapped_column(String(256), nullable=False)
-    port: Mapped[int] = mapped_column(Integer, nullable=False)
-    username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    password: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
-    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[_dt.datetime] = mapped_column(
-        DateTime, server_default=func.now()
-    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    host = Column(String(255), nullable=False)
+    port = Column(Integer, nullable=False)
+    username = Column(String(255), nullable=True)
+    password = Column(String(255), nullable=True)
+    label = Column(String(255), nullable=True)
+    is_default = Column(Boolean, default=False)
+    order_index = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    proxy_rotation_enabled = Column(Boolean, default=False)
+    proxy_rotation_counter = Column(Integer, default=0)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Helpers
+# Engine & Session
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+engine = create_async_engine(DATABASE_URL, echo=False)
+async_session = async_sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
 
 
 async def init_db() -> None:
-    """Create all tables (idempotent)."""
+    """Create all tables."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database initialized.")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Authorized Users
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 async def ensure_admin(admin_id: int) -> None:
-    """Make sure the admin is in the authorized_users table."""
+    """Create the main admin if not already present."""
     async with async_session() as session:
         result = await session.execute(
-            select(AuthorizedUser).where(AuthorizedUser.telegram_id == admin_id)
+            select(AuthorizedUser).where(
+                AuthorizedUser.telegram_id == admin_id
+            )
         )
-        if result.scalar_one_or_none() is None:
+        user = result.scalar_one_or_none()
+        if not user:
             session.add(
                 AuthorizedUser(
                     telegram_id=admin_id,
-                    added_by=admin_id,
                     is_admin=True,
-                    label="Admin",
+                    label="Main Admin",
                 )
             )
             await session.commit()
+            logger.info("Admin user %s created.", admin_id)
 
 
 async def is_user_authorized(telegram_id: int) -> bool:
     async with async_session() as session:
         result = await session.execute(
-            select(AuthorizedUser).where(AuthorizedUser.telegram_id == telegram_id)
+            select(AuthorizedUser).where(
+                AuthorizedUser.telegram_id == telegram_id
+            )
         )
         return result.scalar_one_or_none() is not None
 
@@ -157,48 +164,62 @@ async def is_user_admin(telegram_id: int) -> bool:
     async with async_session() as session:
         result = await session.execute(
             select(AuthorizedUser).where(
-                AuthorizedUser.telegram_id == telegram_id,
-                AuthorizedUser.is_admin == True,
+                and_(
+                    AuthorizedUser.telegram_id == telegram_id,
+                    AuthorizedUser.is_admin == True,  # noqa: E712
+                )
             )
         )
         return result.scalar_one_or_none() is not None
 
 
 async def add_authorized_user(
-    telegram_id: int, added_by: int, label: str | None = None
+    telegram_id: int,
+    added_by: int,
+    label: str = "",
 ) -> bool:
-    """Returns True if user was added, False if already exists."""
+    """Add a user to the whitelist. Returns True if added, False if exists."""
     async with async_session() as session:
-        exists = await session.execute(
-            select(AuthorizedUser).where(AuthorizedUser.telegram_id == telegram_id)
+        existing = await session.execute(
+            select(AuthorizedUser).where(
+                AuthorizedUser.telegram_id == telegram_id
+            )
         )
-        if exists.scalar_one_or_none():
+        if existing.scalar_one_or_none():
             return False
         session.add(
-            AuthorizedUser(telegram_id=telegram_id, added_by=added_by, label=label)
+            AuthorizedUser(
+                telegram_id=telegram_id,
+                added_by=added_by,
+                label=label,
+            )
         )
         await session.commit()
         return True
 
 
+async def get_authorized_users() -> list[AuthorizedUser]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(AuthorizedUser).order_by(AuthorizedUser.created_at)
+        )
+        return list(result.scalars().all())
+
+
 async def remove_authorized_user(telegram_id: int) -> bool:
     async with async_session() as session:
         result = await session.execute(
-            delete(AuthorizedUser).where(AuthorizedUser.telegram_id == telegram_id)
+            delete(AuthorizedUser).where(
+                AuthorizedUser.telegram_id == telegram_id
+            )
         )
         await session.commit()
         return result.rowcount > 0
 
 
-async def get_authorized_users() -> list[AuthorizedUser]:
-    async with async_session() as session:
-        result = await session.execute(
-            select(AuthorizedUser).order_by(AuthorizedUser.added_at)
-        )
-        return list(result.scalars().all())
-
-
-# ── Account CRUD ─────────────────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Accounts
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 async def add_account(
@@ -211,127 +232,141 @@ async def add_account(
     username: str | None = None,
 ) -> Account:
     async with async_session() as session:
-        acc = Account(
+        account = Account(
             owner_id=owner_id,
             phone=phone,
             country=country,
             session_string=session_string,
-            date_added=_dt.date.today(),
             tg_user_id=tg_user_id,
             first_name=first_name,
             username=username,
+            date_added=date.today(),
         )
-        session.add(acc)
+        session.add(account)
         await session.commit()
-        await session.refresh(acc)
-        return acc
+        await session.refresh(account)
+        return account
 
 
 async def get_account_by_id(account_id: int) -> Account | None:
     async with async_session() as session:
         result = await session.execute(
-            select(Account).where(Account.id == account_id)
+            select(Account).where(
+                and_(Account.id == account_id, Account.is_active == True)  # noqa: E712
+            )
         )
         return result.scalar_one_or_none()
 
 
-async def get_accounts_by_owner(owner_id: int, active_only: bool = True) -> list[Account]:
-    async with async_session() as session:
-        stmt = select(Account).where(Account.owner_id == owner_id)
-        if active_only:
-            stmt = stmt.where(Account.is_active == True)
-        stmt = stmt.order_by(Account.country, Account.date_added, Account.phone)
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
-
-
-async def get_countries_for_owner(owner_id: int) -> list[str]:
+async def get_countries_for_owner(user_id: int) -> list[str]:
     async with async_session() as session:
         result = await session.execute(
             select(Account.country)
-            .where(Account.owner_id == owner_id, Account.is_active == True)
-            .group_by(Account.country)
+            .where(
+                and_(
+                    Account.owner_id == user_id,
+                    Account.is_active == True,  # noqa: E712
+                )
+            )
+            .distinct()
             .order_by(Account.country)
         )
         return [row[0] for row in result.all()]
 
 
-async def get_dates_for_country(owner_id: int, country: str) -> list[_dt.date]:
+async def get_dates_for_country(user_id: int, country: str) -> list[date]:
     async with async_session() as session:
         result = await session.execute(
             select(Account.date_added)
             .where(
-                Account.owner_id == owner_id,
-                Account.country == country,
-                Account.is_active == True,
+                and_(
+                    Account.owner_id == user_id,
+                    Account.country == country,
+                    Account.is_active == True,  # noqa: E712
+                )
             )
-            .group_by(Account.date_added)
+            .distinct()
             .order_by(Account.date_added.desc())
         )
         return [row[0] for row in result.all()]
 
 
 async def get_accounts_filtered(
-    owner_id: int, country: str, date_added: _dt.date
+    user_id: int,
+    country: str,
+    date_val: date,
 ) -> list[Account]:
     async with async_session() as session:
         result = await session.execute(
-            select(Account).where(
-                Account.owner_id == owner_id,
-                Account.country == country,
-                Account.date_added == date_added,
-                Account.is_active == True,
-            ).order_by(Account.phone)
+            select(Account)
+            .where(
+                and_(
+                    Account.owner_id == user_id,
+                    Account.country == country,
+                    Account.date_added == date_val,
+                    Account.is_active == True,  # noqa: E712
+                )
+            )
+            .order_by(Account.id)
         )
         return list(result.scalars().all())
 
 
 async def deactivate_account(account_id: int) -> None:
     async with async_session() as session:
-        acc = await session.get(Account, account_id)
-        if acc:
-            acc.is_active = False
-            await session.commit()
-
-
-async def deactivate_accounts(account_ids: list[int]) -> None:
-    async with async_session() as session:
-        for aid in account_ids:
-            acc = await session.get(Account, aid)
-            if acc:
-                acc.is_active = False
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(is_active=False)
+        )
         await session.commit()
 
 
-async def get_statistics(owner_id: int) -> dict:
-    """
-    Returns nested dict:
-    {
-        "total": int,
-        "countries": {
-            "USA": {
-                "total": int,
-                "dates": { "2026-02-10": int, ... }
-            }, ...
-        }
-    }
-    """
-    accounts = await get_accounts_by_owner(owner_id, active_only=True)
-    stats: dict = {"total": 0, "countries": {}}
+async def deactivate_accounts(account_ids: list[int]) -> None:
+    if not account_ids:
+        return
+    async with async_session() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id.in_(account_ids))
+            .values(is_active=False)
+        )
+        await session.commit()
+
+
+async def get_statistics(user_id: int) -> dict:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Account).where(
+                and_(
+                    Account.owner_id == user_id,
+                    Account.is_active == True,  # noqa: E712
+                )
+            )
+        )
+        accounts = list(result.scalars().all())
+
+    total = len(accounts)
+    countries: dict[str, dict] = {}
+
     for acc in accounts:
-        stats["total"] += 1
-        country = acc.country
-        if country not in stats["countries"]:
-            stats["countries"][country] = {"total": 0, "dates": {}}
-        stats["countries"][country]["total"] += 1
-        date_str = acc.date_added.strftime("%B %d, %Y") if isinstance(acc.date_added, _dt.date) else str(acc.date_added)
-        if date_str not in stats["countries"][country]["dates"]:
-            stats["countries"][country]["dates"][date_str] = 0
-        stats["countries"][country]["dates"][date_str] += 1
-    return stats
+        c = acc.country
+        d = (
+            acc.date_added.strftime("%B %d, %Y")
+            if acc.date_added
+            else "Unknown"
+        )
+        if c not in countries:
+            countries[c] = {"total": 0, "dates": {}}
+        countries[c]["total"] += 1
+        countries[c]["dates"][d] = countries[c]["dates"].get(d, 0) + 1
+
+    return {"total": total, "countries": countries}
 
 
-# ── Proxy CRUD ───────────────────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Proxies
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 async def add_proxy(
@@ -340,9 +375,17 @@ async def add_proxy(
     port: int,
     username: str | None = None,
     password: str | None = None,
-    label: str | None = None,
+    label: str = "",
 ) -> Proxy:
     async with async_session() as session:
+        # Determine next order index
+        result = await session.execute(
+            select(func.coalesce(func.max(Proxy.order_index), -1)).where(
+                Proxy.user_id == user_id
+            )
+        )
+        max_order = result.scalar() or -1
+
         proxy = Proxy(
             user_id=user_id,
             host=host,
@@ -350,6 +393,7 @@ async def add_proxy(
             username=username,
             password=password,
             label=label,
+            order_index=max_order + 1,
         )
         session.add(proxy)
         await session.commit()
@@ -358,45 +402,167 @@ async def add_proxy(
 
 
 async def get_proxies(user_id: int) -> list[Proxy]:
+    """Get all proxies for a user, ordered by creation order."""
     async with async_session() as session:
         result = await session.execute(
-            select(Proxy).where(Proxy.user_id == user_id).order_by(Proxy.created_at)
+            select(Proxy)
+            .where(Proxy.user_id == user_id)
+            .order_by(Proxy.order_index, Proxy.created_at)
         )
         return list(result.scalars().all())
 
 
-async def get_default_proxy(user_id: int) -> Proxy | None:
+async def get_proxy_by_id(proxy_id: int) -> Proxy | None:
     async with async_session() as session:
         result = await session.execute(
-            select(Proxy).where(Proxy.user_id == user_id, Proxy.is_default == True)
+            select(Proxy).where(Proxy.id == proxy_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_default_proxy(user_id: int) -> Proxy | None:
+    """Get the default proxy, or the first proxy if no default is set."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Proxy).where(
+                and_(
+                    Proxy.user_id == user_id,
+                    Proxy.is_default == True,  # noqa: E712
+                )
+            )
         )
         proxy = result.scalar_one_or_none()
-        if proxy is None:
-            # Fallback: return first proxy
-            result = await session.execute(
-                select(Proxy).where(Proxy.user_id == user_id).limit(1)
-            )
-            proxy = result.scalar_one_or_none()
-        return proxy
+        if proxy:
+            return proxy
+        # Fallback: first proxy by order
+        result = await session.execute(
+            select(Proxy)
+            .where(Proxy.user_id == user_id)
+            .order_by(Proxy.order_index)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
 
 async def set_default_proxy(proxy_id: int, user_id: int) -> None:
     async with async_session() as session:
-        # Unset all defaults for this user
-        proxies = await session.execute(
-            select(Proxy).where(Proxy.user_id == user_id)
+        # Unset all defaults for user
+        await session.execute(
+            update(Proxy)
+            .where(Proxy.user_id == user_id)
+            .values(is_default=False)
         )
-        for p in proxies.scalars().all():
-            p.is_default = (p.id == proxy_id)
+        # Set the new default
+        await session.execute(
+            update(Proxy)
+            .where(Proxy.id == proxy_id)
+            .values(is_default=True)
+        )
         await session.commit()
 
 
 async def delete_proxy(proxy_id: int) -> None:
     async with async_session() as session:
-        await session.execute(delete(Proxy).where(Proxy.id == proxy_id))
+        await session.execute(
+            delete(Proxy).where(Proxy.id == proxy_id)
+        )
         await session.commit()
 
 
-async def get_proxy_by_id(proxy_id: int) -> Proxy | None:
+async def get_proxy_count(user_id: int) -> int:
     async with async_session() as session:
-        return await session.get(Proxy, proxy_id)
+        result = await session.execute(
+            select(func.count(Proxy.id)).where(Proxy.user_id == user_id)
+        )
+        return result.scalar() or 0
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# User Settings — Proxy Rotation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def get_user_settings(user_id: int) -> UserSettings:
+    """Get or create settings for a user."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(UserSettings).where(UserSettings.user_id == user_id)
+        )
+        settings = result.scalar_one_or_none()
+        if not settings:
+            settings = UserSettings(user_id=user_id)
+            session.add(settings)
+            await session.commit()
+            await session.refresh(settings)
+        return settings
+
+
+async def toggle_proxy_rotation(user_id: int) -> bool:
+    """Toggle proxy rotation on/off. Returns the new state."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(UserSettings).where(UserSettings.user_id == user_id)
+        )
+        settings = result.scalar_one_or_none()
+        if not settings:
+            settings = UserSettings(
+                user_id=user_id,
+                proxy_rotation_enabled=True,
+                proxy_rotation_counter=0,
+            )
+            session.add(settings)
+            await session.commit()
+            return True
+
+        new_state = not settings.proxy_rotation_enabled
+        await session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(
+                proxy_rotation_enabled=new_state,
+                proxy_rotation_counter=0,
+            )
+        )
+        await session.commit()
+        return new_state
+
+
+async def get_active_proxy(user_id: int) -> Proxy | None:
+    """
+    Get the proxy to use, considering rotation settings.
+
+    When rotation is enabled and user has 2+ proxies:
+      - Proxies rotate every 3 accounts in the order they were added.
+      - counter // 3 % num_proxies determines the current proxy index.
+
+    Otherwise, returns the default proxy.
+    """
+    settings = await get_user_settings(user_id)
+    proxies = await get_proxies(user_id)
+
+    if not proxies:
+        return None
+
+    if not settings.proxy_rotation_enabled or len(proxies) < 2:
+        return await get_default_proxy(user_id)
+
+    proxy_index = (settings.proxy_rotation_counter // 3) % len(proxies)
+    return proxies[proxy_index]
+
+
+async def increment_rotation_counter(user_id: int) -> None:
+    """Increment the proxy rotation counter by 1."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(UserSettings).where(UserSettings.user_id == user_id)
+        )
+        settings = result.scalar_one_or_none()
+        if settings:
+            await session.execute(
+                update(UserSettings)
+                .where(UserSettings.user_id == user_id)
+                .values(
+                    proxy_rotation_counter=settings.proxy_rotation_counter + 1
+                )
+            )
+            await session.commit()

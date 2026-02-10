@@ -1,139 +1,144 @@
 """
-Telethon-based session manager.
-
-Handles:
-- Login flow (phone → code → optional 2FA)
-- Session string export/import
-- Session file conversion (Telethon ↔ Pyrogram)
-- Logout
-- Proxy integration via SOCKS5
+Telethon session management:
+  - Client creation with proxy support
+  - Login code request / submission / 2FA
+  - Background code listener for account delivery (Issue #1)
+  - Account logout
+  - Session format conversion (Telethon / Pyrogram files)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import sqlite3
-import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import (
-    SessionPasswordNeededError,
+    AuthKeyUnregisteredError,
+    FloodWaitError,
+    PasswordHashInvalidError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
-    FloodWaitError,
-    PhoneNumberBannedError,
-    PhoneNumberInvalidError,
-    AuthKeyUnregisteredError,
+    SessionPasswordNeededError,
+    UserDeactivatedBanError,
 )
-import python_socks
+from telethon.tl.functions.auth import LogOutRequest
 
-from bot.config import API_ID, API_HASH, SESSIONS_DIR
+from bot.config import API_ID, API_HASH
 
 logger = logging.getLogger(__name__)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Proxy helper
+# Data Classes
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _build_proxy(proxy) -> dict | None:
-    """Build proxy kwargs for Telethon from a Proxy ORM object."""
+
+@dataclass
+class CodeResult:
+    """Result of a login / code submission operation."""
+
+    success: bool = False
+    needs_code: bool = False
+    needs_2fa: bool = False
+    error: str | None = None
+    phone_code_hash: str | None = None
+    session_string: str | None = None
+    user_info: dict | None = None
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Active Code Listeners (module-level registry)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Maps user_id -> listener info dict
+_active_listeners: dict[int, dict[str, Any]] = {}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Client Factory
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def _build_proxy_kwargs(proxy) -> dict:
+    """Convert a Proxy ORM object to Telethon-compatible proxy kwargs."""
     if proxy is None:
-        return None
-    proxy_dict = {
-        "proxy_type": python_socks.ProxyType.SOCKS5,
-        "addr": proxy.host,
-        "port": proxy.port,
-    }
+        return {}
+    try:
+        import socks
+
+        proxy_type = socks.SOCKS5
+    except ImportError:
+        # Fallback: numeric value for SOCKS5 (PySocks convention)
+        proxy_type = 2
+
+    proxy_tuple: tuple
     if proxy.username:
-        proxy_dict["username"] = proxy.username
-    if proxy.password:
-        proxy_dict["password"] = proxy.password
-    return proxy_dict
+        proxy_tuple = (
+            proxy_type,
+            proxy.host,
+            proxy.port,
+            True,
+            proxy.username,
+            proxy.password or "",
+        )
+    else:
+        proxy_tuple = (proxy_type, proxy.host, proxy.port, True)
 
+    return {"proxy": proxy_tuple}
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Client factory
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def create_client(
-    session: str | StringSession | None = None,
+    session: str | None = None,
     proxy=None,
 ) -> TelegramClient:
-    """
-    Create a TelegramClient with optional session string and proxy.
-    """
-    if session is None:
-        session = StringSession()
-    elif isinstance(session, str):
-        session = StringSession(session)
-
-    proxy_kwargs = _build_proxy(proxy)
-
-    client = TelegramClient(
-        session,
-        API_ID,
-        API_HASH,
-        proxy=proxy_kwargs,
-    )
+    """Create a Telethon client with optional StringSession and proxy."""
+    sess = StringSession(session) if session else StringSession()
+    kwargs = _build_proxy_kwargs(proxy)
+    client = TelegramClient(sess, API_ID, API_HASH, **kwargs)
     return client
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Login flow helpers
+# Account Addition Flow
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class LoginResult:
-    """Container for login step results."""
 
-    def __init__(
-        self,
-        success: bool = False,
-        needs_code: bool = False,
-        needs_2fa: bool = False,
-        error: str | None = None,
-        session_string: str | None = None,
-        user_info: dict | None = None,
-        phone_code_hash: str | None = None,
-    ):
-        self.success = success
-        self.needs_code = needs_code
-        self.needs_2fa = needs_2fa
-        self.error = error
-        self.session_string = session_string
-        self.user_info = user_info
-        self.phone_code_hash = phone_code_hash
+async def request_code(
+    phone: str,
+    proxy=None,
+) -> tuple[TelegramClient, CodeResult]:
+    """Send a login code request to the given phone number.
 
-
-async def request_code(phone: str, proxy=None) -> tuple[TelegramClient, LoginResult]:
-    """
-    Step 1: Send login code to the phone number.
-    Returns (client, result). Client must be kept alive for sign_in step.
+    Used during the *account addition* flow (the bot actively sends the code).
+    Returns ``(client, result)``.
     """
     client = create_client(proxy=proxy)
+    result = CodeResult()
+
     try:
         await client.connect()
         sent = await client.send_code_request(phone)
-        return client, LoginResult(
-            needs_code=True,
-            phone_code_hash=sent.phone_code_hash,
-        )
-    except PhoneNumberBannedError:
-        await client.disconnect()
-        return client, LoginResult(error="❌ This phone number is banned by Telegram.")
-    except PhoneNumberInvalidError:
-        await client.disconnect()
-        return client, LoginResult(error="❌ Invalid phone number format.")
+        result.needs_code = True
+        result.phone_code_hash = sent.phone_code_hash
+        return client, result
+
     except FloodWaitError as e:
-        await client.disconnect()
-        return client, LoginResult(error=f"⏳ Too many attempts. Please wait {e.seconds} seconds.")
+        result.error = (
+            f"\u23f3 Too many attempts. Please wait <b>{e.seconds}</b> seconds."
+        )
+        return client, result
+
     except Exception as e:
-        await client.disconnect()
-        logger.exception("request_code failed")
-        return client, LoginResult(error=f"❌ Error: {e}")
+        logger.exception("Error requesting code for %s", phone)
+        result.error = f"\u274c Error: {e}"
+        return client, result
 
 
 async def submit_code(
@@ -141,152 +146,251 @@ async def submit_code(
     phone: str,
     code: str,
     phone_code_hash: str,
-) -> LoginResult:
-    """
-    Step 2: Submit the login code.
-    May return needs_2fa=True if 2FA is enabled.
-    """
+) -> CodeResult:
+    """Submit the login code received by the user."""
+    result = CodeResult()
+
     try:
-        await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
-        me = await client.get_me()
-        session_string = client.session.save()
-        return LoginResult(
-            success=True,
-            session_string=session_string,
-            user_info={
-                "id": me.id,
-                "first_name": me.first_name or "",
-                "username": me.username or "",
-            },
+        await client.sign_in(
+            phone=phone, code=code, phone_code_hash=phone_code_hash
         )
+        me = await client.get_me()
+        result.success = True
+        result.session_string = client.session.save()
+        result.user_info = {
+            "id": me.id,
+            "first_name": me.first_name or "",
+            "username": me.username or "",
+        }
+        return result
+
     except SessionPasswordNeededError:
-        return LoginResult(needs_2fa=True)
-    except PhoneCodeExpiredError:
-        return LoginResult(error="❌ The login code has expired. Please request a new one.")
+        result.needs_2fa = True
+        return result
+
     except PhoneCodeInvalidError:
-        return LoginResult(error="❌ Invalid login code. Please try again.")
+        result.error = "\u274c Invalid code. Please try again."
+        return result
+
+    except PhoneCodeExpiredError:
+        result.error = "\u23f0 Code expired. Please request a new one."
+        return result
+
     except FloodWaitError as e:
-        return LoginResult(error=f"⏳ Too many attempts. Please wait {e.seconds} seconds.")
+        result.error = f"\u23f3 Too many attempts. Wait <b>{e.seconds}s</b>."
+        return result
+
     except Exception as e:
-        logger.exception("submit_code failed")
-        return LoginResult(error=f"❌ Error: {e}")
+        logger.exception("Error submitting code")
+        result.error = f"\u274c Error: {e}"
+        return result
 
 
-async def submit_2fa(client: TelegramClient, password: str) -> LoginResult:
-    """
-    Step 3: Submit 2FA password.
-    """
+async def submit_2fa(
+    client: TelegramClient,
+    password: str,
+) -> CodeResult:
+    """Submit 2FA cloud password."""
+    result = CodeResult()
+
     try:
         await client.sign_in(password=password)
         me = await client.get_me()
-        session_string = client.session.save()
-        return LoginResult(
-            success=True,
-            session_string=session_string,
-            user_info={
-                "id": me.id,
-                "first_name": me.first_name or "",
-                "username": me.username or "",
-            },
-        )
-    except Exception as e:
-        logger.exception("submit_2fa failed")
-        return LoginResult(error=f"❌ 2FA Error: {e}")
+        result.success = True
+        result.session_string = client.session.save()
+        result.user_info = {
+            "id": me.id,
+            "first_name": me.first_name or "",
+            "username": me.username or "",
+        }
+        return result
 
+    except PasswordHashInvalidError:
+        result.error = "\u274c Wrong password. Please try again."
+        return result
 
-async def resend_code(client: TelegramClient, phone: str) -> LoginResult:
-    """Resend login code."""
-    try:
-        sent = await client.send_code_request(phone)
-        return LoginResult(
-            needs_code=True,
-            phone_code_hash=sent.phone_code_hash,
-        )
     except FloodWaitError as e:
-        return LoginResult(error=f"⏳ Please wait {e.seconds} seconds before requesting a new code.")
+        result.error = f"\u23f3 Too many attempts. Wait <b>{e.seconds}s</b>."
+        return result
+
     except Exception as e:
-        logger.exception("resend_code failed")
-        return LoginResult(error=f"❌ Error resending code: {e}")
+        logger.exception("Error submitting 2FA")
+        result.error = f"\u274c Error: {e}"
+        return result
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Logout
+# Issue #1 — Background Code Listener for Delivery
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async def logout_account(session_string: str, proxy=None) -> bool:
-    """Log out of a Telegram account using its session string."""
-    client = create_client(session=session_string, proxy=proxy)
+
+async def start_code_listener(
+    session_string: str,
+    phone: str,
+    account_id: int,
+    user_id: int,
+    bot,
+    chat_id: int,
+    proxy=None,
+    timeout: int = 300,
+) -> tuple[bool, str | None]:
+    """
+    Connect to the account and listen for incoming login codes from
+    Telegram (user ID 777000).
+
+    When a code arrives the bot sends it to the user automatically.
+    Returns ``(success, error_message)``.
+    """
+    # Stop any existing listener for this user first
+    await stop_code_listener(user_id)
+
     try:
+        client = create_client(session=session_string, proxy=proxy)
         await client.connect()
-        await client.log_out()
-        return True
-    except AuthKeyUnregisteredError:
-        # Already logged out
-        return True
-    except Exception:
-        logger.exception("logout_account failed")
-        return False
-    finally:
-        try:
+
+        if not await client.is_user_authorized():
             await client.disconnect()
+            return False, (
+                "\u274c Session has expired. The account may need to be "
+                "re-added."
+            )
+
+    except AuthKeyUnregisteredError:
+        return False, (
+            "\u274c Session is no longer valid. Please re-add the account."
+        )
+    except UserDeactivatedBanError:
+        return False, (
+            "\u274c This account has been banned or deactivated."
+        )
+    except Exception as e:
+        logger.exception("Error connecting to account %s", phone)
+        return False, f"\u274c Connection error: {e}"
+
+    # --- Set up event-based code capture ---
+    code_event = asyncio.Event()
+    captured: dict[str, str | None] = {"code": None}
+
+    @client.on(events.NewMessage(from_users=777000))
+    async def _on_login_code(event):  # type: ignore[misc]
+        text = event.raw_text or ""
+        match = re.search(r"(\d{5,6})", text)
+        if match and not code_event.is_set():
+            captured["code"] = match.group(1)
+            code_event.set()
+
+    # --- Background task that waits for the code ---
+    async def _listener_task() -> None:
+        try:
+            await asyncio.wait_for(code_event.wait(), timeout=timeout)
+            if captured["code"]:
+                from bot.utils.keyboards import code_received_kb
+
+                await bot.send_message(
+                    chat_id,
+                    (
+                        "\U0001f511 <b>Login Code Captured!</b>\n"
+                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                        f"\U0001f4f1  Phone: <b>{phone}</b>\n"
+                        f"\U0001f510  Code: <code>{captured['code']}</code>"
+                        "\n\n"
+                        "\U0001f4cb <i>Tap the code to copy it.</i>"
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=code_received_kb(account_id),
+                )
+        except asyncio.TimeoutError:
+            from bot.utils.keyboards import account_actions_kb
+
+            await bot.send_message(
+                chat_id,
+                (
+                    "\u23f0 <b>Listener Timed Out</b>\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                    f"No login code was received for\n"
+                    f"<b>{phone}</b> within "
+                    f"{timeout // 60} minutes.\n\n"
+                    "You can try again using the button below."
+                ),
+                parse_mode="HTML",
+                reply_markup=account_actions_kb(account_id),
+            )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Listener task error for account %s", phone)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            _active_listeners.pop(user_id, None)
+
+    task = asyncio.create_task(_listener_task())
+    _active_listeners[user_id] = {
+        "client": client,
+        "task": task,
+        "account_id": account_id,
+        "phone": phone,
+    }
+    return True, None
+
+
+async def stop_code_listener(user_id: int) -> None:
+    """Stop any active code listener for the given user."""
+    info = _active_listeners.pop(user_id, None)
+    if info:
+        info["task"].cancel()
+        try:
+            await info["client"].disconnect()
         except Exception:
             pass
 
 
+def is_listener_active(user_id: int) -> bool:
+    """Check whether a listener is running for a user."""
+    return user_id in _active_listeners
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Deliver account (re-login to get code for delivery)
+# Account Logout
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async def request_delivery_code(
-    session_string: str,
-    phone: str,
-    proxy=None,
-) -> tuple[TelegramClient | None, LoginResult]:
-    """
-    For individual delivery: send a login code using the stored session.
-    We create a fresh client to request the code.
-    """
-    client = create_client(proxy=proxy)
+
+async def logout_account(session_string: str, proxy=None) -> bool:
+    """Log out of an account and invalidate the session."""
     try:
+        client = create_client(session=session_string, proxy=proxy)
         await client.connect()
-        sent = await client.send_code_request(phone)
-        return client, LoginResult(
-            needs_code=True,
-            phone_code_hash=sent.phone_code_hash,
-        )
-    except FloodWaitError as e:
+        await client(LogOutRequest())
         await client.disconnect()
-        return None, LoginResult(error=f"⏳ Please wait {e.seconds} seconds.")
-    except Exception as e:
-        await client.disconnect()
-        logger.exception("request_delivery_code failed")
-        return None, LoginResult(error=f"❌ Error: {e}")
+        return True
+    except Exception:
+        logger.exception("Error during logout")
+        return False
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Session conversion
+# Session Format Conversion
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def telethon_string_to_session_file(
     session_string: str,
     output_path: Path,
 ) -> bool:
-    """
-    Convert a Telethon StringSession to a .session file (SQLite format).
-    Returns True on success.
-    """
+    """Convert a Telethon StringSession to a ``.session`` SQLite file."""
     try:
-        # Decode the string session to get auth key + DC info
         data = StringSession(session_string)
 
-        # Create SQLite session file
-        db = sqlite3.connect(str(output_path))
-        cursor = db.cursor()
+        conn = sqlite3.connect(str(output_path))
+        c = conn.cursor()
 
-        cursor.execute(
-            "CREATE TABLE IF NOT EXISTS version (version INTEGER PRIMARY KEY)"
-        )
-        cursor.execute(
+        c.execute(
             "CREATE TABLE IF NOT EXISTS sessions ("
             "  dc_id INTEGER PRIMARY KEY,"
             "  server_address TEXT,"
@@ -295,27 +399,27 @@ def telethon_string_to_session_file(
             "  takeout_id INTEGER"
             ")"
         )
-        cursor.execute(
+        c.execute(
             "CREATE TABLE IF NOT EXISTS entities ("
             "  id INTEGER PRIMARY KEY,"
             "  hash INTEGER NOT NULL,"
             "  username TEXT,"
-            "  phone INTEGER,"
+            "  phone TEXT,"
             "  name TEXT,"
             "  date INTEGER"
             ")"
         )
-        cursor.execute(
+        c.execute(
             "CREATE TABLE IF NOT EXISTS sent_files ("
             "  md5_digest BLOB,"
             "  file_size INTEGER,"
             "  type INTEGER,"
             "  id INTEGER,"
             "  hash INTEGER,"
-            "  PRIMARY KEY(md5_digest, file_size, type)"
+            "  PRIMARY KEY (md5_digest, file_size, type)"
             ")"
         )
-        cursor.execute(
+        c.execute(
             "CREATE TABLE IF NOT EXISTS update_state ("
             "  id INTEGER PRIMARY KEY,"
             "  pts INTEGER,"
@@ -324,23 +428,29 @@ def telethon_string_to_session_file(
             "  seq INTEGER"
             ")"
         )
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS version "
+            "(version INTEGER PRIMARY KEY)"
+        )
+        c.execute("INSERT OR REPLACE INTO version VALUES (7)")
 
-        # Insert version
-        cursor.execute("DELETE FROM version")
-        cursor.execute("INSERT INTO version VALUES (7)")
-
-        # Insert session data
-        cursor.execute("DELETE FROM sessions")
-        cursor.execute(
-            "INSERT INTO sessions (dc_id, server_address, port, auth_key) VALUES (?, ?, ?, ?)",
-            (data.dc_id, data.server_address, data.port, data.auth_key.key),
+        c.execute(
+            "INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?)",
+            (
+                data.dc_id,
+                data.server_address,
+                data.port,
+                data.auth_key,
+                None,
+            ),
         )
 
-        db.commit()
-        db.close()
+        conn.commit()
+        conn.close()
         return True
+
     except Exception:
-        logger.exception("telethon_string_to_session_file failed")
+        logger.exception("Error converting to Telethon session file")
         return False
 
 
@@ -349,70 +459,64 @@ def telethon_string_to_pyrogram_session(
     output_path: Path,
     user_id: int = 0,
 ) -> bool:
-    """
-    Convert a Telethon StringSession to a Pyrogram .session file (SQLite).
-    Returns True on success.
-    """
+    """Convert a Telethon StringSession to a Pyrogram ``.session`` file."""
     try:
         data = StringSession(session_string)
 
-        db = sqlite3.connect(str(output_path))
-        cursor = db.cursor()
+        conn = sqlite3.connect(str(output_path))
+        c = conn.cursor()
 
-        cursor.execute(
-            "CREATE TABLE IF NOT EXISTS version (number INTEGER PRIMARY KEY)"
-        )
-        cursor.execute(
+        c.execute(
             "CREATE TABLE IF NOT EXISTS sessions ("
-            "  dc_id INTEGER PRIMARY KEY,"
+            "  dc_id INTEGER,"
             "  api_id INTEGER,"
             "  test_mode INTEGER,"
             "  auth_key BLOB,"
-            "  date INTEGER NOT NULL,"
-            "  user_id INTEGER,"
-            "  is_bot INTEGER"
+            "  date INTEGER NOT NULL DEFAULT 0,"
+            "  user_id INTEGER NOT NULL DEFAULT 0,"
+            "  is_bot INTEGER NOT NULL DEFAULT 0"
             ")"
         )
-        cursor.execute(
+        c.execute(
             "CREATE TABLE IF NOT EXISTS peers ("
             "  id INTEGER PRIMARY KEY,"
             "  access_hash INTEGER,"
             "  type TEXT NOT NULL,"
+            "  username TEXT,"
             "  phone_number TEXT,"
-            "  last_update_on INTEGER NOT NULL DEFAULT(CAST(strftime('%s','now') AS INTEGER))"
+            "  last_update_on INTEGER NOT NULL DEFAULT 0"
             ")"
         )
-        cursor.execute(
+        c.execute(
             "CREATE TABLE IF NOT EXISTS usernames ("
             "  id INTEGER,"
             "  username TEXT,"
-            "  FOREIGN KEY(id) REFERENCES peers(id)"
+            "  FOREIGN KEY (id) REFERENCES peers(id)"
             ")"
         )
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS version "
+            "(number INTEGER PRIMARY KEY)"
+        )
+        c.execute("INSERT OR REPLACE INTO version VALUES (4)")
 
-        # Version
-        cursor.execute("DELETE FROM version")
-        cursor.execute("INSERT INTO version VALUES (4)")
-
-        # Session
-        cursor.execute("DELETE FROM sessions")
-        cursor.execute(
-            "INSERT INTO sessions (dc_id, api_id, test_mode, auth_key, date, user_id, is_bot) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        c.execute(
+            "INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 data.dc_id,
                 API_ID,
                 0,
-                data.auth_key.key,
-                int(time.time()),
+                data.auth_key,
+                0,
                 user_id,
                 0,
             ),
         )
 
-        db.commit()
-        db.close()
+        conn.commit()
+        conn.close()
         return True
+
     except Exception:
-        logger.exception("telethon_string_to_pyrogram_session failed")
+        logger.exception("Error converting to Pyrogram session file")
         return False
