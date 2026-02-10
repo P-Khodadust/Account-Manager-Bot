@@ -432,13 +432,19 @@ def telethon_string_to_session_file(
         )
         c.execute("INSERT OR REPLACE INTO version VALUES (7)")
 
+        # auth_key is an AuthKey object; extract raw bytes via .key
+        auth_key_bytes = (
+            data.auth_key.key
+            if hasattr(data.auth_key, "key")
+            else bytes(data.auth_key)
+        )
         c.execute(
             "INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?)",
             (
                 data.dc_id,
                 data.server_address,
                 data.port,
-                data.auth_key,
+                auth_key_bytes,
                 None,
             ),
         )
@@ -498,13 +504,18 @@ def telethon_string_to_pyrogram_session(
         )
         c.execute("INSERT OR REPLACE INTO version VALUES (4)")
 
+        auth_key_bytes = (
+            data.auth_key.key
+            if hasattr(data.auth_key, "key")
+            else bytes(data.auth_key)
+        )
         c.execute(
             "INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 data.dc_id,
                 API_ID,
                 0,
-                data.auth_key,
+                auth_key_bytes,
                 0,
                 user_id,
                 0,
