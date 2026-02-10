@@ -16,7 +16,7 @@ router = Router(name="start")
 
 WELCOME_TEXT = (
     "🏠 <b>Account Manager</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "━━━━━━━━━━━━\n\n"
     "Welcome! Use the menu below to manage\n"
     "your Telegram accounts.\n\n"
     "🔑  <b>Grant Account Access</b> — Add a new account\n"

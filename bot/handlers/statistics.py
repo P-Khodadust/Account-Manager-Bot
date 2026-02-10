@@ -8,23 +8,11 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery
 
 from bot import database as db
+from bot.utils.country_detector import get_flag
 from bot.utils.decorators import authorized
 from bot.utils.keyboards import main_menu_kb
 
 router = Router(name="statistics")
-
-_FLAG_MAP = {
-    "USA": "🇺🇸", "Canada": "🇨🇦", "Iran": "🇮🇷",
-    "United Kingdom": "🇬🇧", "Germany": "🇩🇪", "France": "🇫🇷",
-    "Turkey": "🇹🇷", "Russia": "🇷🇺", "India": "🇮🇳",
-    "China": "🇨🇳", "Japan": "🇯🇵", "Brazil": "🇧🇷",
-    "Australia": "🇦🇺", "Italy": "🇮🇹", "Spain": "🇪🇸",
-    "Netherlands": "🇳🇱", "UAE": "🇦🇪", "Ukraine": "🇺🇦",
-}
-
-
-def _flag(country: str) -> str:
-    return _FLAG_MAP.get(country, "🌍")
 
 
 @router.callback_query(F.data == "statistics")
@@ -36,9 +24,9 @@ async def cb_statistics(callback: CallbackQuery) -> None:
     if stats["total"] == 0:
         is_admin = await db.is_user_admin(user_id)
         await callback.message.edit_text(
-            "📊 <b>Statistics</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📭 You don't have any accounts yet.\n"
+            "\U0001f4ca <b>Statistics</b>\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            "\U0001f4ed You don't have any accounts yet.\n"
             "Use <b>Grant Account Access</b> to add your first account!",
             parse_mode="HTML",
             reply_markup=main_menu_kb(is_admin),
@@ -48,16 +36,16 @@ async def cb_statistics(callback: CallbackQuery) -> None:
 
     # Build statistics text
     lines = [
-        "📊 <b>Account Statistics</b>",
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n",
-        f"📦  <b>Total Accounts:</b>  {stats['total']}\n",
+        "\U0001f4ca <b>Account Statistics</b>",
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n",
+        f"\U0001f4e6  <b>Total Accounts:</b>  {stats['total']}\n",
     ]
 
     for country, cdata in sorted(stats["countries"].items()):
-        flag = _flag(country)
-        lines.append(f"\n{flag}  <b>{country}</b>  —  {cdata['total']} account(s)")
+        flag = get_flag(country)
+        lines.append(f"\n{flag}  <b>{country}</b>  \u2014  {cdata['total']} account(s)")
         for date_str, count in sorted(cdata["dates"].items()):
-            lines.append(f"    📅  {date_str}:  <b>{count}</b>")
+            lines.append(f"    \U0001f4c5  {date_str}:  <b>{count}</b>")
 
     text = "\n".join(lines)
 

@@ -45,9 +45,7 @@ async def cb_proxy_menu(
 
     await callback.message.edit_text(
         "\U0001f310 <b>Proxy Settings</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"You have <b>{count}</b> proxy configuration(s).\n\n"
         "Proxies are used when connecting to accounts\n"
         "to prevent bans and restrictions.\n\n"
@@ -73,9 +71,7 @@ async def cb_proxy_add(
 ) -> None:
     await callback.message.edit_text(
         "\u2795 <b>Add SOCKS5 Proxy</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Please send the proxy details in this format:\n\n"
         "<code>IP:Port:Username:Password</code>\n\n"
         "Or without authentication:\n"
@@ -135,9 +131,7 @@ async def on_proxy_details(message: Message, state: FSMContext) -> None:
     is_admin = await db.is_user_admin(message.from_user.id)
     await message.answer(
         "\u2705 <b>Proxy Added!</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f539  Host: <b>{host}</b>\n"
         f"\U0001f539  Port: <b>{port}</b>\n"
         f"\U0001f539  Auth: <b>{'Yes' if username else 'No'}</b>\n\n"
@@ -168,9 +162,7 @@ async def cb_proxy_view(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         f"\U0001f310 <b>Proxy Details</b>{default_str}\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f539  Host: <code>{proxy.host}</code>\n"
         f"\U0001f539  Port: <code>{proxy.port}</code>\n"
         f"\U0001f539  Username: "
@@ -203,9 +195,7 @@ async def cb_proxy_default(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         "\U0001f310 <b>Proxy Settings</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"You have <b>{len(proxies)}</b> proxy configuration(s).\n\n"
         "\u2705 = currently active (default) proxy",
         parse_mode="HTML",
@@ -240,9 +230,7 @@ async def cb_proxy_delete(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         "\U0001f310 <b>Proxy Settings</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"You have <b>{len(proxies)}</b> proxy configuration(s).\n\n"
         "\u2705 = currently active (default) proxy",
         parse_mode="HTML",
@@ -283,9 +271,7 @@ async def cb_proxy_rotation_toggle(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         "\U0001f310 <b>Proxy Settings</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"You have <b>{len(proxies)}</b> proxy configuration(s).\n\n"
         "Proxies are used when connecting to accounts\n"
         "to prevent bans and restrictions.\n\n"

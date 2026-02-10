@@ -39,7 +39,7 @@ async def cb_manage_users(callback: CallbackQuery, state: FSMContext) -> None:
     users = await db.get_authorized_users()
     await callback.message.edit_text(
         "👤 <b>User Management</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━\n\n"
         f"Total authorized users: <b>{len(users)}</b>\n\n"
         "Select a user to manage or add a new one.",
         parse_mode="HTML",
@@ -55,7 +55,7 @@ async def cb_manage_users(callback: CallbackQuery, state: FSMContext) -> None:
 async def cb_user_add(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(
         "➕ <b>Add New User</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━\n\n"
         "Please send the <b>Telegram numeric ID</b>\n"
         "of the user you want to authorize.\n\n"
         "💡 <i>Users can find their ID using @userinfobot</i>",
@@ -117,7 +117,7 @@ async def cb_user_view(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         f"👤 <b>User Details</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"━━━━━━━━━━━━\n\n"
         f"🆔  Telegram ID: <code>{telegram_id}</code>{admin_badge}\n",
         parse_mode="HTML",
         reply_markup=user_detail_kb(telegram_id) if not is_main_admin else manage_users_kb(await db.get_authorized_users()),
@@ -147,7 +147,7 @@ async def cb_user_remove(callback: CallbackQuery) -> None:
     users = await db.get_authorized_users()
     await callback.message.edit_text(
         "👤 <b>User Management</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━\n\n"
         f"Total authorized users: <b>{len(users)}</b>\n\n"
         "Select a user to manage or add a new one.",
         parse_mode="HTML",

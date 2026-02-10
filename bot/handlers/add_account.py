@@ -24,7 +24,7 @@ from aiogram.types import CallbackQuery, Message
 from bot import database as db
 from bot.utils.decorators import authorized
 from bot.utils.keyboards import cancel_kb, main_menu_kb
-from bot.utils.country_detector import detect_country, format_phone_display
+from bot.utils.country_detector import detect_country, format_phone_display, get_flag
 from bot.utils.session_manager import request_code, submit_code, submit_2fa
 
 logger = logging.getLogger(__name__)
@@ -50,9 +50,7 @@ async def cb_add_account(
     await state.clear()
     await callback.message.edit_text(
         "\U0001f511 <b>Grant Account Access</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Please send the <b>phone number</b> of the\n"
         "Telegram account you want to add.\n\n"
         "\U0001f4dd <i>Format: +1234567890 (with country code)</i>",
@@ -87,7 +85,7 @@ async def on_phone_received(message: Message, state: FSMContext) -> None:
 
     await message.answer(
         f"\U0001f4f1 Phone: <b>{display_phone}</b>\n"
-        f"\U0001f30d Country: <b>{country}</b>\n\n"
+        f"{get_flag(country)} Country: <b>{country}</b>\n\n"
         f"\u23f3 Sending login code\u2026",
         parse_mode="HTML",
     )
@@ -176,9 +174,7 @@ async def on_code_received(message: Message, state: FSMContext) -> None:
 
         await message.answer(
             "\U0001f510 <b>Two-Factor Authentication</b>\n"
-            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-            "\u2501\u2501\u2501\u2501\n\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
             "This account has 2FA enabled.\n"
             "Please enter your <b>cloud password</b>.",
             parse_mode="HTML",
@@ -287,12 +283,10 @@ async def _save_account(
         is_admin = await db.is_user_admin(message.from_user.id)
         await message.answer(
             "\u2705 <b>Account Added Successfully!</b>\n"
-            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-            "\u2501\u2501\u2501\u2501\n\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
             f"\U0001f4f1  Phone: <b>{display_phone}</b>\n"
             f"\U0001f464  Name: <b>{name}{uname_str}</b>\n"
-            f"\U0001f30d  Country: <b>{country}</b>\n"
+            f"{get_flag(country)}  Country: <b>{country}</b>\n"
             f"\U0001f4c5  Date: "
             f"<b>{account.date_added.strftime('%B %d, %Y')}</b>\n\n"
             "The account has been saved and categorized.",

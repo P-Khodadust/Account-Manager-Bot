@@ -33,6 +33,7 @@ from aiogram.types import (
 
 from bot import database as db
 from bot.config import SESSIONS_DIR
+from bot.utils.country_detector import get_flag
 from bot.utils.decorators import authorized
 from bot.utils.keyboards import (
     account_actions_kb,
@@ -79,9 +80,7 @@ async def cb_deliver_menu(callback: CallbackQuery, state: FSMContext) -> None:
 
     await callback.message.edit_text(
         "\U0001f4e6 <b>Deliver Accounts</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Choose your delivery method:\n\n"
         "\U0001f4f1  <b>Individual</b> \u2014 Deliver one account at a time\n"
         "\U0001f4c1  <b>Bulk Sessions</b> \u2014 Export multiple session "
@@ -113,9 +112,7 @@ async def cb_deliver_individual(
     await state.update_data(delivery_mode="individual")
     await callback.message.edit_text(
         "\U0001f4f1 <b>Individual Delivery</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Select a country category:",
         parse_mode="HTML",
         reply_markup=country_select_kb(
@@ -154,9 +151,7 @@ async def cb_ind_country(
     await callback.message.edit_text(
         f"\U0001f4f1 <b>Individual Delivery</b> \u2192 "
         f"<b>{country}</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Select a date category:",
         parse_mode="HTML",
         reply_markup=date_select_kb(
@@ -192,10 +187,8 @@ async def cb_ind_date(
 
     await callback.message.edit_text(
         f"\U0001f4f1 <b>Individual Delivery</b>\n"
-        f"\U0001f30d {country}  \u2022  \U0001f4c5 {date_label}\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        f"{get_flag(country)} {country}  \u2022  \U0001f4c5 {date_label}\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"Found <b>{len(accounts)}</b> account(s).\n"
         "Select an account to deliver:",
         parse_mode="HTML",
@@ -249,9 +242,7 @@ async def cb_ind_acc_select(
 
     await callback.message.edit_text(
         "\U0001f4f1 <b>Listening for Login Code</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"Phone: <code>{account.phone}</code>\n\n"
         "\U0001f442 I'm now monitoring this account for\n"
         "incoming login codes.\n\n"
@@ -302,9 +293,7 @@ async def cb_resend_code(
 
     await callback.message.edit_text(
         "\U0001f504 <b>Listener Restarted</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"Phone: <code>{account.phone}</code>\n\n"
         "\U0001f442 Listening for new login code\u2026\n"
         "Please attempt to log in again.\n\n"
@@ -352,9 +341,7 @@ async def cb_logout_account(
     is_admin = await db.is_user_admin(callback.from_user.id)
     await callback.message.edit_text(
         "\U0001f6aa <b>Account Logged Out</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f4f1 {account.phone} has been logged out\n"
         "and removed from your statistics.",
         parse_mode="HTML",
@@ -375,9 +362,7 @@ async def cb_deliver_bulk(
     await state.update_data(delivery_mode="bulk")
     await callback.message.edit_text(
         "\U0001f4c1 <b>Bulk Session Delivery</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Choose the session file format:",
         parse_mode="HTML",
         reply_markup=session_format_kb(),
@@ -405,9 +390,7 @@ async def cb_bulk_format(
 
     await callback.message.edit_text(
         f"\U0001f4c1 <b>Bulk Delivery</b> \u2014 <b>{fmt_label}</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Select a country category:",
         parse_mode="HTML",
         reply_markup=country_select_kb(
@@ -449,9 +432,7 @@ async def cb_bulk_country(
     await callback.message.edit_text(
         f"\U0001f4c1 <b>Bulk Delivery</b> \u2014 "
         f"<b>{fmt_label}</b> \u2192 <b>{country}</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         "Select a date category:",
         parse_mode="HTML",
         reply_markup=date_select_kb(
@@ -487,10 +468,8 @@ async def cb_bulk_date(
 
     await callback.message.edit_text(
         f"\U0001f4c1 <b>Bulk Delivery</b>\n"
-        f"\U0001f30d {country}  \u2022  \U0001f4c5 {date_label}\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        f"{get_flag(country)} {country}  \u2022  \U0001f4c5 {date_label}\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f4ca Available accounts: <b>{len(accounts)}</b>\n\n"
         f"How many accounts do you want to export?\n"
         f"<i>Enter a number (1\u2013{len(accounts)}):</i>",
@@ -592,7 +571,7 @@ async def on_bulk_quantity(message: Message, state: FSMContext) -> None:
         caption=(
             f"\U0001f4c1 <b>Session Files Delivered!</b>\n\n"
             f"\U0001f4e6  Format: <b>{fmt_label}</b>\n"
-            f"\U0001f30d  Country: <b>{country}</b>\n"
+            f"{get_flag(country)}  Country: <b>{country}</b>\n"
             f"\U0001f4c5  Date: "
             f"<b>{date_obj.strftime('%B %d, %Y')}</b>\n"
             f"\U0001f4ca  Accounts: <b>{qty}</b>"
@@ -651,9 +630,7 @@ async def cb_bulk_logout_yes(
     is_admin = await db.is_user_admin(callback.from_user.id)
     await callback.message.edit_text(
         f"\u2705 <b>Logout Complete</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-        "\u2501\u2501\u2501\u2501\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f6aa  Logged out: "
         f"<b>{success_count}/{len(delivered_ids)}</b> accounts\n"
         f"\U0001f4ca  Statistics updated.",

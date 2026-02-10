@@ -9,6 +9,8 @@ from typing import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from bot.utils.country_detector import get_flag
+
 
 def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
     """Shortcut for creating an inline button."""
@@ -109,7 +111,8 @@ def country_select_kb(
 ) -> InlineKeyboardMarkup:
     buttons = []
     for c in countries:
-        buttons.append([_btn(f"\U0001f30d  {c}", f"{prefix}:{c}")])
+        flag = get_flag(c)
+        buttons.append([_btn(f"{flag}  {c}", f"{prefix}:{c}")])
     buttons.append([_btn("\U0001f519  Back", back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
