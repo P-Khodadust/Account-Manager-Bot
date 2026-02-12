@@ -1,11 +1,12 @@
 """
 Account delivery — two methods:
 
-Method 1  Individual Account Delivery  (Issue #1 — code listener)
-  → Select country → date → account
+Method 1  Individual Account Delivery  (with "Next" sequential navigation)
+  → Select country → date → account list
   → Bot connects to account session and listens for login codes
   → When Telegram sends the code (from user 777000) the bot captures it
   → Bot delivers the captured code to the user
+  → "Next" button allows walking through all accounts in the category
 
 Method 2  Bulk Session File Delivery
   → Choose format (Telethon / Pyrogram) → country → date → quantity
@@ -45,6 +46,7 @@ from bot.utils.keyboards import (
     deliver_menu_kb,
     listening_kb,
     main_menu_kb,
+    next_confirm_kb,
     session_format_kb,
 )
 from bot.utils.session_manager import (
@@ -92,7 +94,7 @@ async def cb_deliver_menu(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# METHOD 1: Individual Account Delivery  (Issue #1 rewrite)
+# METHOD 1: Individual Account Delivery
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.callback_query(F.data == "deliver_individual")
@@ -182,7 +184,11 @@ async def cb_ind_date(
         )
         return
 
-    await state.update_data(ind_date=date_iso)
+    # Store the ordered list of account IDs for sequential navigation
+    await state.update_data(
+        ind_date=date_iso,
+        ind_account_ids=[acc.id for acc in accounts],
+    )
     date_label = date_obj.strftime("%B %d, %Y")
 
     await callback.message.edit_text(
@@ -217,6 +223,20 @@ async def cb_ind_acc_select(
         )
         return
 
+    # Determine position in the list and whether a "Next" exists
+    data = await state.get_data()
+    account_ids = data.get("ind_account_ids", [])
+    try:
+        current_idx = account_ids.index(account_id)
+    except ValueError:
+        current_idx = 0
+    has_next = current_idx < len(account_ids) - 1
+
+    await state.update_data(
+        ind_current_idx=current_idx,
+        ind_account_id=account_id,
+    )
+
     # Get proxy (rotation-aware)
     proxy = await db.get_active_proxy(callback.from_user.id)
 
@@ -229,13 +249,14 @@ async def cb_ind_acc_select(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
         proxy=proxy,
+        has_next=has_next,
     )
 
     if not success:
         await callback.message.edit_text(
             f"\u274c <b>Delivery Error</b>\n\n{error}",
             parse_mode="HTML",
-            reply_markup=account_actions_kb(account_id),
+            reply_markup=account_actions_kb(account_id, has_next=has_next),
         )
         await callback.answer()
         return
@@ -252,7 +273,7 @@ async def cb_ind_acc_select(
         "3. I'll capture and deliver it to you\n\n"
         "\u23f3 <i>Listening\u2026 (5 min timeout)</i>",
         parse_mode="HTML",
-        reply_markup=listening_kb(account_id),
+        reply_markup=listening_kb(account_id, has_next=has_next),
     )
     await callback.answer()
 
@@ -273,6 +294,12 @@ async def cb_resend_code(
         )
         return
 
+    # Determine has_next from state
+    data = await state.get_data()
+    account_ids = data.get("ind_account_ids", [])
+    current_idx = data.get("ind_current_idx", 0)
+    has_next = bool(account_ids) and current_idx < len(account_ids) - 1
+
     proxy = await db.get_active_proxy(callback.from_user.id)
 
     success, error = await start_code_listener(
@@ -283,6 +310,7 @@ async def cb_resend_code(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
         proxy=proxy,
+        has_next=has_next,
     )
 
     if not success:
@@ -299,7 +327,7 @@ async def cb_resend_code(
         "Please attempt to log in again.\n\n"
         "\u23f3 <i>Listening\u2026 (5 min timeout)</i>",
         parse_mode="HTML",
-        reply_markup=listening_kb(account_id),
+        reply_markup=listening_kb(account_id, has_next=has_next),
     )
     await callback.answer("\u2705 Listener restarted!", show_alert=True)
 
@@ -348,6 +376,147 @@ async def cb_logout_account(
         reply_markup=main_menu_kb(is_admin),
     )
     await state.clear()
+
+
+# ── "Next" button — sequential navigation ────────────────────────────
+
+@router.callback_query(F.data.startswith("next_acc:"))
+@authorized
+async def cb_next_acc(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    """User clicked ➡️ Next — ask whether to logout current account."""
+    account_id = int(callback.data.split(":")[1])
+
+    # Stop any active listener before proceeding
+    await stop_code_listener(callback.from_user.id)
+
+    account = await db.get_account_by_id(account_id)
+    phone_display = account.phone if account else "this account"
+
+    await callback.message.edit_text(
+        "\U0001f504 <b>Next Account</b>\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"Current: <code>{phone_display}</code>\n\n"
+        "Log out of this account before\n"
+        "moving to the next one?",
+        parse_mode="HTML",
+        reply_markup=next_confirm_kb(account_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("next_logout:"))
+@authorized
+async def cb_next_logout(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    """Logout current account, then move to the next one."""
+    account_id = int(callback.data.split(":")[1])
+    account = await db.get_account_by_id(account_id)
+
+    if account and account.owner_id == callback.from_user.id:
+        proxy = await db.get_active_proxy(callback.from_user.id)
+        await logout_account(account.session_string, proxy=proxy)
+        await db.deactivate_account(account_id)
+
+    await _move_to_next_account(callback, state)
+
+
+@router.callback_query(F.data.startswith("next_keep:"))
+@authorized
+async def cb_next_keep(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    """Keep current account logged in, move to the next one."""
+    await _move_to_next_account(callback, state)
+
+
+async def _move_to_next_account(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """Find the next active account in the category and start listening."""
+    data = await state.get_data()
+    account_ids = data.get("ind_account_ids", [])
+    current_idx = data.get("ind_current_idx", 0)
+    user_id = callback.from_user.id
+
+    # Search for the next active account
+    next_idx = current_idx + 1
+    next_account = None
+    while next_idx < len(account_ids):
+        acc = await db.get_account_by_id(account_ids[next_idx])
+        if acc:
+            next_account = acc
+            break
+        next_idx += 1
+
+    if not next_account:
+        is_admin = await db.is_user_admin(user_id)
+        await callback.message.edit_text(
+            "\u2705 <b>No More Accounts</b>\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            "You've reached the end of the account\n"
+            "list in this category.\n\n"
+            "Return to the main menu to continue.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(is_admin),
+        )
+        await state.clear()
+        await callback.answer()
+        return
+
+    # Update position in state
+    has_next = next_idx < len(account_ids) - 1
+    await state.update_data(
+        ind_current_idx=next_idx,
+        ind_account_id=next_account.id,
+    )
+
+    # Start listener for the next account
+    proxy = await db.get_active_proxy(user_id)
+    success, error = await start_code_listener(
+        session_string=next_account.session_string,
+        phone=next_account.phone,
+        account_id=next_account.id,
+        user_id=user_id,
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        proxy=proxy,
+        has_next=has_next,
+    )
+
+    if not success:
+        await callback.message.edit_text(
+            f"\u274c <b>Delivery Error</b>\n\n{error}",
+            parse_mode="HTML",
+            reply_markup=account_actions_kb(
+                next_account.id, has_next=has_next
+            ),
+        )
+        await callback.answer()
+        return
+
+    position = next_idx + 1
+    total = len(account_ids)
+
+    await callback.message.edit_text(
+        f"\U0001f4f1 <b>Listening for Login Code</b>  "
+        f"({position}/{total})\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"Phone: <code>{next_account.phone}</code>\n\n"
+        "\U0001f442 I'm now monitoring this account for\n"
+        "incoming login codes.\n\n"
+        "\U0001f4dd <b>Instructions:</b>\n"
+        "1. Log into this account on another device\n"
+        "2. Telegram will send a code to this account\n"
+        "3. I'll capture and deliver it to you\n\n"
+        "\u23f3 <i>Listening\u2026 (5 min timeout)</i>",
+        parse_mode="HTML",
+        reply_markup=listening_kb(next_account.id, has_next=has_next),
+    )
+    await callback.answer()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

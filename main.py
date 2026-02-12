@@ -15,7 +15,15 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import BOT_TOKEN, ADMIN_ID
-from bot.database import init_db, ensure_admin
+from bot.database import (
+    init_db,
+    ensure_admin,
+    run_migrations,
+    get_authorized_users,
+    get_all_active_accounts,
+    get_default_proxy,
+    mark_account_status,
+)
 
 # ── Handlers ─────────────────────────────────────────────────────────
 from bot.handlers.start import router as start_router
@@ -35,10 +43,70 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ── Periodic Session Validation ──────────────────────────────────────
+
+async def periodic_session_check() -> None:
+    """Validate all stored sessions every 6 hours.
+
+    Marks removed / banned accounts as inactive automatically so
+    statistics stay accurate without manual intervention.
+    """
+    from bot.utils.session_manager import validate_session
+
+    await asyncio.sleep(300)  # initial 5-min delay after startup
+
+    while True:
+        try:
+            users = await get_authorized_users()
+            for user in users:
+                accounts = await get_all_active_accounts(user.telegram_id)
+                if not accounts:
+                    continue
+
+                proxy = await get_default_proxy(user.telegram_id)
+                invalidated = 0
+
+                for acc in accounts:
+                    try:
+                        status = await validate_session(
+                            acc.session_string, proxy
+                        )
+                        if status in ("removed", "invalid"):
+                            await mark_account_status(acc.id, status)
+                            invalidated += 1
+                            logger.info(
+                                "Auto-detected: account %s (%s) → %s",
+                                acc.phone,
+                                acc.id,
+                                status,
+                            )
+                    except Exception:
+                        pass  # skip individual errors
+                    # Small delay between accounts to avoid flooding
+                    await asyncio.sleep(2)
+
+                if invalidated:
+                    logger.info(
+                        "User %s: %d session(s) invalidated this cycle.",
+                        user.telegram_id,
+                        invalidated,
+                    )
+        except Exception:
+            logger.exception("Error in periodic session validation")
+
+        await asyncio.sleep(6 * 3600)  # run every 6 hours
+
+
+# ── Startup / Main ───────────────────────────────────────────────────
+
 async def on_startup(bot: Bot) -> None:
     """Run once when the bot starts."""
     await init_db()
+    await run_migrations()
     await ensure_admin(ADMIN_ID)
+
+    # Launch background session validator
+    asyncio.create_task(periodic_session_check())
 
     me = await bot.get_me()
     logger.info(

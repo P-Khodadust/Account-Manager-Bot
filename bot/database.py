@@ -2,6 +2,7 @@
 Database layer — SQLAlchemy async with aiosqlite.
 
 Models: AuthorizedUser, Account, Proxy, UserSettings
+Includes migration helpers for schema evolution.
 """
 
 from __future__ import annotations
@@ -19,11 +20,13 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     and_,
     delete,
     func,
+    inspect,
+    or_,
     select,
+    text,
     update,
 )
 from sqlalchemy.ext.asyncio import (
@@ -76,11 +79,10 @@ class Account(Base):
     first_name = Column(String(255), nullable=True)
     username = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True)
+    status = Column(String(16), default="active")
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        UniqueConstraint("owner_id", "phone", name="uq_owner_phone"),
-    )
+    # No unique constraint — same phone can be re-added after logout
 
 
 class Proxy(Base):
@@ -125,12 +127,137 @@ async def init_db() -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Migrations
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def run_migrations() -> None:
+    """Run all pending schema migrations."""
+    async with engine.begin() as conn:
+        await conn.run_sync(_migrate_accounts_table)
+    await _migrate_area_codes()
+    logger.info("Migrations complete.")
+
+
+def _migrate_accounts_table(connection) -> None:
+    """Add status column and remove the unique constraint on accounts."""
+    insp = inspect(connection)
+
+    if "accounts" not in insp.get_table_names():
+        return  # create_all will handle it for fresh databases
+
+    columns = {col["name"] for col in insp.get_columns("accounts")}
+    has_status = "status" in columns
+
+    unique_constraints = insp.get_unique_constraints("accounts")
+    has_uq = any(
+        uc.get("name") == "uq_owner_phone" for uc in unique_constraints
+    )
+
+    if has_status and not has_uq:
+        return  # Already migrated
+
+    logger.info(
+        "Migrating accounts table (add status=%s, drop uq=%s)...",
+        not has_status,
+        has_uq,
+    )
+
+    # Recreate table: add status, drop unique constraint
+    connection.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS accounts_new ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  owner_id BIGINT NOT NULL,"
+            "  phone VARCHAR(32) NOT NULL,"
+            "  country VARCHAR(64) NOT NULL,"
+            "  date_added DATE,"
+            "  session_string TEXT NOT NULL,"
+            "  tg_user_id BIGINT,"
+            "  first_name VARCHAR(255),"
+            "  username VARCHAR(255),"
+            "  is_active BOOLEAN DEFAULT 1,"
+            "  status VARCHAR(16) DEFAULT 'active',"
+            "  created_at DATETIME"
+            ")"
+        )
+    )
+
+    if has_status:
+        connection.execute(
+            text(
+                "INSERT INTO accounts_new "
+                "(id, owner_id, phone, country, date_added, "
+                "session_string, tg_user_id, first_name, username, "
+                "is_active, status, created_at) "
+                "SELECT id, owner_id, phone, country, date_added, "
+                "session_string, tg_user_id, first_name, username, "
+                "is_active, status, created_at "
+                "FROM accounts"
+            )
+        )
+    else:
+        connection.execute(
+            text(
+                "INSERT INTO accounts_new "
+                "(id, owner_id, phone, country, date_added, "
+                "session_string, tg_user_id, first_name, username, "
+                "is_active, status, created_at) "
+                "SELECT id, owner_id, phone, country, date_added, "
+                "session_string, tg_user_id, first_name, username, "
+                "is_active, "
+                "CASE WHEN is_active = 1 THEN 'active' "
+                "ELSE 'logged_out' END, "
+                "created_at "
+                "FROM accounts"
+            )
+        )
+
+    connection.execute(text("DROP TABLE accounts"))
+    connection.execute(
+        text("ALTER TABLE accounts_new RENAME TO accounts")
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_accounts_owner_id "
+            "ON accounts (owner_id)"
+        )
+    )
+    logger.info("Accounts table migration complete.")
+
+
+async def _migrate_area_codes() -> None:
+    """Fix accounts with +1354 and +1753 area codes (Canada, not USA)."""
+    async with async_session() as session:
+        result = await session.execute(
+            update(Account)
+            .where(
+                and_(
+                    Account.country == "USA",
+                    or_(
+                        Account.phone.like("+1354%"),
+                        Account.phone.like("+1753%"),
+                    ),
+                )
+            )
+            .values(country="Canada")
+        )
+        count = result.rowcount
+        await session.commit()
+        if count > 0:
+            logger.info(
+                "Migrated %d account(s) from USA to Canada "
+                "(354/753 area codes).",
+                count,
+            )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Authorized Users
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 async def ensure_admin(admin_id: int) -> None:
-    """Create the main admin if not already present."""
     async with async_session() as session:
         result = await session.execute(
             select(AuthorizedUser).where(
@@ -178,7 +305,6 @@ async def add_authorized_user(
     added_by: int,
     label: str = "",
 ) -> bool:
-    """Add a user to the whitelist. Returns True if added, False if exists."""
     async with async_session() as session:
         existing = await session.execute(
             select(AuthorizedUser).where(
@@ -231,7 +357,22 @@ async def add_account(
     first_name: str | None = None,
     username: str | None = None,
 ) -> Account:
+    """Add a new account. Deactivates any previous active entry for the
+    same phone+owner first (marks as 'replaced'), then creates a fresh row."""
     async with async_session() as session:
+        # Deactivate previous active entries for same phone + owner
+        await session.execute(
+            update(Account)
+            .where(
+                and_(
+                    Account.owner_id == owner_id,
+                    Account.phone == phone,
+                    Account.is_active == True,  # noqa: E712
+                )
+            )
+            .values(is_active=False, status="replaced")
+        )
+
         account = Account(
             owner_id=owner_id,
             phone=phone,
@@ -241,6 +382,7 @@ async def add_account(
             first_name=first_name,
             username=username,
             date_added=date.today(),
+            status="active",
         )
         session.add(account)
         await session.commit()
@@ -252,7 +394,10 @@ async def get_account_by_id(account_id: int) -> Account | None:
     async with async_session() as session:
         result = await session.execute(
             select(Account).where(
-                and_(Account.id == account_id, Account.is_active == True)  # noqa: E712
+                and_(
+                    Account.id == account_id,
+                    Account.is_active == True,  # noqa: E712
+                )
             )
         )
         return result.scalar_one_or_none()
@@ -312,26 +457,58 @@ async def get_accounts_filtered(
         return list(result.scalars().all())
 
 
-async def deactivate_account(account_id: int) -> None:
+async def deactivate_account(
+    account_id: int,
+    status: str = "logged_out",
+) -> None:
     async with async_session() as session:
         await session.execute(
             update(Account)
             .where(Account.id == account_id)
-            .values(is_active=False)
+            .values(is_active=False, status=status)
         )
         await session.commit()
 
 
-async def deactivate_accounts(account_ids: list[int]) -> None:
+async def deactivate_accounts(
+    account_ids: list[int],
+    status: str = "logged_out",
+) -> None:
     if not account_ids:
         return
     async with async_session() as session:
         await session.execute(
             update(Account)
             .where(Account.id.in_(account_ids))
-            .values(is_active=False)
+            .values(is_active=False, status=status)
         )
         await session.commit()
+
+
+async def mark_account_status(account_id: int, status: str) -> None:
+    """Set the status of an account (active/logged_out/removed/invalid)."""
+    is_active = status == "active"
+    async with async_session() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(is_active=is_active, status=status)
+        )
+        await session.commit()
+
+
+async def get_all_active_accounts(user_id: int) -> list[Account]:
+    """Get every active account for a user (used by session validator)."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Account).where(
+                and_(
+                    Account.owner_id == user_id,
+                    Account.is_active == True,  # noqa: E712
+                )
+            )
+        )
+        return list(result.scalars().all())
 
 
 async def get_statistics(user_id: int) -> dict:
@@ -378,7 +555,6 @@ async def add_proxy(
     label: str = "",
 ) -> Proxy:
     async with async_session() as session:
-        # Determine next order index
         result = await session.execute(
             select(func.coalesce(func.max(Proxy.order_index), -1)).where(
                 Proxy.user_id == user_id
@@ -402,7 +578,6 @@ async def add_proxy(
 
 
 async def get_proxies(user_id: int) -> list[Proxy]:
-    """Get all proxies for a user, ordered by creation order."""
     async with async_session() as session:
         result = await session.execute(
             select(Proxy)
@@ -421,7 +596,6 @@ async def get_proxy_by_id(proxy_id: int) -> Proxy | None:
 
 
 async def get_default_proxy(user_id: int) -> Proxy | None:
-    """Get the default proxy, or the first proxy if no default is set."""
     async with async_session() as session:
         result = await session.execute(
             select(Proxy).where(
@@ -434,7 +608,6 @@ async def get_default_proxy(user_id: int) -> Proxy | None:
         proxy = result.scalar_one_or_none()
         if proxy:
             return proxy
-        # Fallback: first proxy by order
         result = await session.execute(
             select(Proxy)
             .where(Proxy.user_id == user_id)
@@ -446,13 +619,11 @@ async def get_default_proxy(user_id: int) -> Proxy | None:
 
 async def set_default_proxy(proxy_id: int, user_id: int) -> None:
     async with async_session() as session:
-        # Unset all defaults for user
         await session.execute(
             update(Proxy)
             .where(Proxy.user_id == user_id)
             .values(is_default=False)
         )
-        # Set the new default
         await session.execute(
             update(Proxy)
             .where(Proxy.id == proxy_id)
@@ -483,7 +654,6 @@ async def get_proxy_count(user_id: int) -> int:
 
 
 async def get_user_settings(user_id: int) -> UserSettings:
-    """Get or create settings for a user."""
     async with async_session() as session:
         result = await session.execute(
             select(UserSettings).where(UserSettings.user_id == user_id)
@@ -498,7 +668,6 @@ async def get_user_settings(user_id: int) -> UserSettings:
 
 
 async def toggle_proxy_rotation(user_id: int) -> bool:
-    """Toggle proxy rotation on/off. Returns the new state."""
     async with async_session() as session:
         result = await session.execute(
             select(UserSettings).where(UserSettings.user_id == user_id)
@@ -528,15 +697,6 @@ async def toggle_proxy_rotation(user_id: int) -> bool:
 
 
 async def get_active_proxy(user_id: int) -> Proxy | None:
-    """
-    Get the proxy to use, considering rotation settings.
-
-    When rotation is enabled and user has 2+ proxies:
-      - Proxies rotate every 3 accounts in the order they were added.
-      - counter // 3 % num_proxies determines the current proxy index.
-
-    Otherwise, returns the default proxy.
-    """
     settings = await get_user_settings(user_id)
     proxies = await get_proxies(user_id)
 
@@ -551,7 +711,6 @@ async def get_active_proxy(user_id: int) -> Proxy | None:
 
 
 async def increment_rotation_counter(user_id: int) -> None:
-    """Increment the proxy rotation counter by 1."""
     async with async_session() as session:
         result = await session.execute(
             select(UserSettings).where(UserSettings.user_id == user_id)
@@ -562,7 +721,8 @@ async def increment_rotation_counter(user_id: int) -> None:
                 update(UserSettings)
                 .where(UserSettings.user_id == user_id)
                 .values(
-                    proxy_rotation_counter=settings.proxy_rotation_counter + 1
+                    proxy_rotation_counter=settings.proxy_rotation_counter
+                    + 1
                 )
             )
             await session.commit()

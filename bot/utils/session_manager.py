@@ -233,6 +233,7 @@ async def start_code_listener(
     chat_id: int,
     proxy=None,
     timeout: int = 300,
+    has_next: bool = False,
 ) -> tuple[bool, str | None]:
     """
     Connect to the account and listen for incoming login codes from
@@ -297,7 +298,9 @@ async def start_code_listener(
                         "\U0001f4cb <i>Tap the code to copy it.</i>"
                     ),
                     parse_mode="HTML",
-                    reply_markup=code_received_kb(account_id),
+                    reply_markup=code_received_kb(
+                        account_id, has_next=has_next
+                    ),
                 )
         except asyncio.TimeoutError:
             from bot.utils.keyboards import account_actions_kb
@@ -306,16 +309,16 @@ async def start_code_listener(
                 chat_id,
                 (
                     "\u23f0 <b>Listener Timed Out</b>\n"
-                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
-                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
                     f"No login code was received for\n"
                     f"<b>{phone}</b> within "
                     f"{timeout // 60} minutes.\n\n"
                     "You can try again using the button below."
                 ),
                 parse_mode="HTML",
-                reply_markup=account_actions_kb(account_id),
+                reply_markup=account_actions_kb(
+                    account_id, has_next=has_next
+                ),
             )
         except asyncio.CancelledError:
             pass
@@ -456,6 +459,45 @@ def telethon_string_to_session_file(
     except Exception:
         logger.exception("Error converting to Telethon session file")
         return False
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Session Validation (auto-detection of removed / invalid accounts)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def validate_session(
+    session_string: str,
+    proxy=None,
+) -> str:
+    """
+    Quick health-check for a stored session.
+
+    Returns a status string:
+      * ``"active"``  – session is valid and authorised
+      * ``"removed"`` – auth key unregistered (user removed the session)
+      * ``"invalid"`` – account deactivated / banned
+      * ``"unknown"`` – could not determine (network error, etc.)
+    """
+    client = create_client(session=session_string, proxy=proxy)
+    try:
+        await client.connect()
+        if await client.is_user_authorized():
+            return "active"
+        return "invalid"
+    except AuthKeyUnregisteredError:
+        return "removed"
+    except UserDeactivatedBanError:
+        return "invalid"
+    except Exception:
+        # Network errors, timeouts, etc. — assume still valid to
+        # avoid false positives.
+        return "unknown"
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 def telethon_string_to_pyrogram_session(

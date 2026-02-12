@@ -295,21 +295,10 @@ async def _save_account(
         )
     except Exception as e:
         logger.exception("Failed to save account")
-        if (
-            "uq_owner_phone" in str(e).lower()
-            or "unique" in str(e).lower()
-        ):
-            await message.answer(
-                "\u26a0\ufe0f This phone number is already in your "
-                "account list.",
-                parse_mode="HTML",
-                reply_markup=cancel_kb(),
-            )
-        else:
-            await message.answer(
-                f"\u274c Error saving account: {e}",
-                parse_mode="HTML",
-                reply_markup=cancel_kb(),
-            )
+        await message.answer(
+            f"\u274c Error saving account: {e}",
+            parse_mode="HTML",
+            reply_markup=cancel_kb(),
+        )
 
     await state.clear()

@@ -166,50 +166,86 @@ def session_format_kb() -> InlineKeyboardMarkup:
 # ── Individual Delivery Keyboards ────────────────────────────────────
 
 
-def listening_kb(account_id: int) -> InlineKeyboardMarkup:
+def listening_kb(
+    account_id: int, has_next: bool = False
+) -> InlineKeyboardMarkup:
     """Keyboard shown while the bot listens for login codes."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn("\U0001f504  Restart Listener", f"resend_code:{account_id}")],
-            [
-                _btn(
-                    "\U0001f6aa  Log Out of Account",
-                    f"logout_acc:{account_id}",
-                )
-            ],
-            [_btn("\u274c  Cancel", "deliver_menu")],
-        ]
-    )
+    buttons = [
+        [_btn("\U0001f504  Restart Listener", f"resend_code:{account_id}")],
+        [
+            _btn(
+                "\U0001f6aa  Log Out of Account",
+                f"logout_acc:{account_id}",
+            )
+        ],
+    ]
+    if has_next:
+        buttons.append(
+            [_btn("\u27a1\ufe0f  Next", f"next_acc:{account_id}")]
+        )
+    buttons.append([_btn("\u274c  Cancel", "deliver_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def code_received_kb(account_id: int) -> InlineKeyboardMarkup:
+def code_received_kb(
+    account_id: int, has_next: bool = False
+) -> InlineKeyboardMarkup:
     """Keyboard shown after a login code is captured."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn("\U0001f504  Listen Again", f"resend_code:{account_id}")],
-            [
-                _btn(
-                    "\U0001f6aa  Log Out of Account",
-                    f"logout_acc:{account_id}",
-                )
-            ],
-            [_btn("\U0001f519  Back to Menu", "deliver_menu")],
-        ]
-    )
+    buttons = [
+        [_btn("\U0001f504  Listen Again", f"resend_code:{account_id}")],
+        [
+            _btn(
+                "\U0001f6aa  Log Out of Account",
+                f"logout_acc:{account_id}",
+            )
+        ],
+    ]
+    if has_next:
+        buttons.append(
+            [_btn("\u27a1\ufe0f  Next", f"next_acc:{account_id}")]
+        )
+    buttons.append([_btn("\U0001f519  Back to Menu", "deliver_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def account_actions_kb(account_id: int) -> InlineKeyboardMarkup:
+def account_actions_kb(
+    account_id: int, has_next: bool = False
+) -> InlineKeyboardMarkup:
     """General account action buttons."""
+    buttons = [
+        [_btn("\U0001f504  Resend Code", f"resend_code:{account_id}")],
+        [
+            _btn(
+                "\U0001f6aa  Log Out of Account",
+                f"logout_acc:{account_id}",
+            )
+        ],
+    ]
+    if has_next:
+        buttons.append(
+            [_btn("\u27a1\ufe0f  Next", f"next_acc:{account_id}")]
+        )
+    buttons.append([_btn("\U0001f519  Back to Menu", "deliver_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def next_confirm_kb(account_id: int) -> InlineKeyboardMarkup:
+    """Confirm whether to logout current account before moving to next."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn("\U0001f504  Resend Code", f"resend_code:{account_id}")],
             [
                 _btn(
-                    "\U0001f6aa  Log Out of Account",
-                    f"logout_acc:{account_id}",
+                    "\u2705  Yes, logout and continue",
+                    f"next_logout:{account_id}",
                 )
             ],
-            [_btn("\U0001f519  Back to Menu", "deliver_menu")],
+            [
+                _btn(
+                    "\u274c  No, keep logged in",
+                    f"next_keep:{account_id}",
+                )
+            ],
+            [_btn("\U0001f519  Cancel", f"resend_code:{account_id}")],
         ]
     )
 
