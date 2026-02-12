@@ -270,10 +270,6 @@ async def cb_ind_acc_select(
         f"Phone: <code>{account.phone}</code>\n\n"
         "\U0001f442 I'm now monitoring this account for\n"
         "incoming login codes.\n\n"
-        "\U0001f4dd <b>Instructions:</b>\n"
-        "1. Log into this account on another device\n"
-        "2. Telegram will send a code to this account\n"
-        "3. I'll capture and deliver it to you\n\n"
         "\u23f3 <i>Listening\u2026 (5 min timeout)</i>",
         parse_mode="HTML",
         reply_markup=listening_kb(account_id, has_next=has_next),
@@ -511,10 +507,6 @@ async def _move_to_next_account(
         f"Phone: <code>{next_account.phone}</code>\n\n"
         "\U0001f442 I'm now monitoring this account for\n"
         "incoming login codes.\n\n"
-        "\U0001f4dd <b>Instructions:</b>\n"
-        "1. Log into this account on another device\n"
-        "2. Telegram will send a code to this account\n"
-        "3. I'll capture and deliver it to you\n\n"
         "\u23f3 <i>Listening\u2026 (5 min timeout)</i>",
         parse_mode="HTML",
         reply_markup=listening_kb(next_account.id, has_next=has_next),
