@@ -362,6 +362,205 @@ def is_listener_active(user_id: int) -> bool:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2FA Management
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def check_account_has_2fa(
+    session_string: str,
+    proxy=None,
+) -> bool | None:
+    """Check whether an account has 2FA enabled.
+
+    Returns ``True`` / ``False``, or ``None`` if the check failed.
+    """
+    client = create_client(session=session_string, proxy=proxy)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return None
+        from telethon.tl.functions.account import GetPasswordRequest
+
+        pwd = await client(GetPasswordRequest())
+        return pwd.has_password
+    except Exception:
+        logger.exception("Error checking 2FA status")
+        return None
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def enable_2fa_on_account(
+    session_string: str,
+    password: str,
+    proxy=None,
+) -> tuple[bool, str]:
+    """Enable 2FA on an account.
+
+    Returns ``(success, reason)`` where *reason* is one of:
+    ``"enabled"``, ``"already_has_2fa"``, ``"session_expired"``,
+    ``"flood_wait:N"``, or an error string.
+    """
+    client = create_client(session=session_string, proxy=proxy)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, "session_expired"
+
+        from telethon.tl.functions.account import (
+            GetPasswordRequest,
+            UpdatePasswordSettingsRequest,
+        )
+        from telethon.tl.types import InputCheckPasswordEmpty
+        from telethon.tl.types.account import PasswordInputSettings
+        from telethon.password import compute_digest
+
+        pwd = await client(GetPasswordRequest())
+
+        if pwd.has_password:
+            return False, "already_has_2fa"
+
+        new_hash = compute_digest(pwd.new_algo, password)
+
+        await client(
+            UpdatePasswordSettingsRequest(
+                password=InputCheckPasswordEmpty(),
+                new_settings=PasswordInputSettings(
+                    new_algo=pwd.new_algo,
+                    new_password_hash=new_hash,
+                    hint="",
+                ),
+            )
+        )
+        return True, "enabled"
+
+    except FloodWaitError as e:
+        return False, f"flood_wait:{e.seconds}"
+    except Exception as e:
+        logger.exception("Error enabling 2FA")
+        return False, str(e)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def disable_2fa_on_account(
+    session_string: str,
+    password: str,
+    proxy=None,
+) -> tuple[bool, str]:
+    """Disable 2FA on an account.
+
+    Returns ``(success, reason)`` where *reason* is one of:
+    ``"disabled"``, ``"no_2fa"``, ``"wrong_password"``,
+    ``"session_expired"``, ``"flood_wait:N"``, or an error string.
+    """
+    client = create_client(session=session_string, proxy=proxy)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, "session_expired"
+
+        from telethon.tl.functions.account import (
+            GetPasswordRequest,
+            UpdatePasswordSettingsRequest,
+        )
+        from telethon.tl.types.account import PasswordInputSettings
+        from telethon.password import compute_check
+
+        pwd = await client(GetPasswordRequest())
+
+        if not pwd.has_password:
+            return False, "no_2fa"
+
+        check = compute_check(pwd, password)
+
+        await client(
+            UpdatePasswordSettingsRequest(
+                password=check,
+                new_settings=PasswordInputSettings(
+                    new_algo=pwd.new_algo,
+                    new_password_hash=b"",
+                    hint="",
+                ),
+            )
+        )
+        return True, "disabled"
+
+    except PasswordHashInvalidError:
+        return False, "wrong_password"
+    except FloodWaitError as e:
+        return False, f"flood_wait:{e.seconds}"
+    except Exception as e:
+        logger.exception("Error disabling 2FA")
+        return False, str(e)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Terminate Other Sessions (keep bot's session only)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def terminate_other_sessions(
+    session_string: str,
+    proxy=None,
+) -> tuple[bool, int, str]:
+    """Kill all sessions except the bot's own session for an account.
+
+    Returns ``(success, terminated_count, error_or_empty_str)``.
+    """
+    client = create_client(session=session_string, proxy=proxy)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, 0, "session_expired"
+
+        from telethon.tl.functions.account import (
+            GetAuthorizationsRequest,
+            ResetAuthorizationRequest,
+        )
+
+        auths = await client(GetAuthorizationsRequest())
+        terminated = 0
+
+        for auth in auths.authorizations:
+            # Skip the current (bot's) session
+            if getattr(auth, "current", False) or auth.hash == 0:
+                continue
+            try:
+                await client(ResetAuthorizationRequest(hash=auth.hash))
+                terminated += 1
+            except Exception:
+                pass  # individual termination errors are non-fatal
+
+        return True, terminated, ""
+
+    except Exception as e:
+        logger.exception("Error terminating other sessions")
+        return False, 0, str(e)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Account Logout
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
 async def logout_account(session_string: str, proxy=None) -> bool:
     """Log out of an account and invalidate the session."""
     try:

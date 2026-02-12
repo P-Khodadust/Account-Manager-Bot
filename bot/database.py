@@ -80,6 +80,7 @@ class Account(Base):
     username = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True)
     status = Column(String(16), default="active")
+    has_2fa = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # No unique constraint — same phone can be re-added after logout
@@ -107,6 +108,7 @@ class UserSettings(Base):
     user_id = Column(BigInteger, unique=True, nullable=False, index=True)
     proxy_rotation_enabled = Column(Boolean, default=False)
     proxy_rotation_counter = Column(Integer, default=0)
+    twofa_password = Column(Text, nullable=True)  # encrypted
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -135,6 +137,7 @@ async def run_migrations() -> None:
     """Run all pending schema migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(_migrate_accounts_table)
+        await conn.run_sync(_add_twofa_columns)
     await _migrate_area_codes()
     logger.info("Migrations complete.")
 
@@ -224,6 +227,33 @@ def _migrate_accounts_table(connection) -> None:
         )
     )
     logger.info("Accounts table migration complete.")
+
+
+def _add_twofa_columns(connection) -> None:
+    """Add has_2fa to accounts and twofa_password to user_settings."""
+    insp = inspect(connection)
+
+    if "accounts" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("accounts")}
+        if "has_2fa" not in cols:
+            connection.execute(
+                text(
+                    "ALTER TABLE accounts "
+                    "ADD COLUMN has_2fa BOOLEAN DEFAULT 0"
+                )
+            )
+            logger.info("Added has_2fa column to accounts.")
+
+    if "user_settings" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("user_settings")}
+        if "twofa_password" not in cols:
+            connection.execute(
+                text(
+                    "ALTER TABLE user_settings "
+                    "ADD COLUMN twofa_password TEXT"
+                )
+            )
+            logger.info("Added twofa_password column to user_settings.")
 
 
 async def _migrate_area_codes() -> None:
@@ -706,7 +736,7 @@ async def get_active_proxy(user_id: int) -> Proxy | None:
     if not settings.proxy_rotation_enabled or len(proxies) < 2:
         return await get_default_proxy(user_id)
 
-    proxy_index = (settings.proxy_rotation_counter // 3) % len(proxies)
+    proxy_index = settings.proxy_rotation_counter % len(proxies)
     return proxies[proxy_index]
 
 
@@ -726,3 +756,40 @@ async def increment_rotation_counter(user_id: int) -> None:
                 )
             )
             await session.commit()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# User Settings — 2FA Password
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def set_twofa_password(
+    user_id: int,
+    encrypted_password: str,
+) -> None:
+    """Store an encrypted 2FA password for a user."""
+    settings = await get_user_settings(user_id)  # ensures row exists
+    async with async_session() as session:
+        await session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(twofa_password=encrypted_password)
+        )
+        await session.commit()
+
+
+async def get_twofa_password(user_id: int) -> str | None:
+    """Return the encrypted 2FA password (or None)."""
+    settings = await get_user_settings(user_id)
+    return settings.twofa_password
+
+
+async def update_account_2fa(account_id: int, has_2fa: bool) -> None:
+    """Set the has_2fa flag for a single account."""
+    async with async_session() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(has_2fa=has_2fa)
+        )
+        await session.commit()

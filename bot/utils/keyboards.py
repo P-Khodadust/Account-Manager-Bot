@@ -30,6 +30,7 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
             _btn("\U0001f4e6  Deliver", "deliver_menu"),
         ],
         [_btn("\U0001f310  Proxy Settings", "proxy_menu")],
+        [_btn("\U0001f510  2FA Settings", "twofa_menu")],
     ]
     if is_admin:
         buttons.append(
@@ -122,6 +123,7 @@ def date_select_kb(
     prefix: str = "date",
     back_cb: str = "main_menu",
     counts: dict | None = None,
+    show_logout_sessions: bool = False,
 ) -> InlineKeyboardMarkup:
     buttons = []
     for d in dates:
@@ -130,9 +132,11 @@ def date_select_kb(
         label = d.strftime("%B %d, %Y")
         iso = d.isoformat()
         count_str = f"  ({counts[iso]})" if counts and iso in counts else ""
-        buttons.append(
-            [_btn(f"\U0001f4c5  {label}{count_str}", f"{prefix}:{iso}")]
-        )
+        row = [_btn(f"\U0001f4c5  {label}{count_str}", f"{prefix}:{iso}")]
+        if show_logout_sessions:
+            mode = "i" if "ind" in prefix else "b"
+            row.append(_btn("\U0001f6aa", f"ls:{mode}:{iso}"))
+        buttons.append(row)
     buttons.append([_btn("\U0001f519  Back", back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -279,7 +283,7 @@ def proxy_menu_kb(
         buttons.append(
             [
                 _btn(
-                    f"\U0001f504  Change proxy every 3 accounts: {status}",
+                    f"\U0001f504  Rotate proxy per account: {status}",
                     "proxy_rotation_toggle",
                 )
             ]
@@ -288,7 +292,7 @@ def proxy_menu_kb(
         buttons.append(
             [
                 _btn(
-                    "\U0001f504  Change proxy every 3 accounts (need 2+ proxies)",
+                    "\U0001f504  Rotate proxy per account (need 2+)",
                     "proxy_rotation_disabled",
                 )
             ]
@@ -304,5 +308,52 @@ def proxy_detail_kb(proxy_id: int) -> InlineKeyboardMarkup:
             [_btn("\u2705  Set as Default", f"proxy_default:{proxy_id}")],
             [_btn("\U0001f5d1  Delete Proxy", f"proxy_delete:{proxy_id}")],
             [_btn("\U0001f519  Back", "proxy_menu")],
+        ]
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2FA Settings
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def twofa_menu_kb(has_password: bool = False) -> InlineKeyboardMarkup:
+    pwd_icon = "\u2705" if has_password else "\u26a0\ufe0f"
+    buttons = [
+        [_btn(f"\U0001f511  Set 2FA Password  {pwd_icon}", "twofa_set_pwd")],
+        [_btn("\u2705  Enable 2FA (All Accounts)", "twofa_enable_all")],
+        [_btn("\u274c  Disable 2FA (All Accounts)", "twofa_disable_all")],
+        [_btn("\U0001f195  Enable for New Accounts Only", "twofa_enable_new")],
+        [_btn("\U0001f519  Back", "main_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def twofa_disable_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\u2705  Yes, disable 2FA", "twofa_disable_confirm")],
+            [_btn("\u274c  Cancel", "twofa_menu")],
+        ]
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Logout Other Sessions (per date category)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def logout_sessions_confirm_kb(
+    mode: str, date_iso: str
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(
+                    "\u2705  Yes, terminate other sessions",
+                    f"ls_y:{mode}:{date_iso}",
+                )
+            ],
+            [_btn("\u274c  Cancel", f"ls_n:{mode}:{date_iso}")],
         ]
     )

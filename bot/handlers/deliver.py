@@ -45,6 +45,7 @@ from bot.utils.keyboards import (
     date_select_kb,
     deliver_menu_kb,
     listening_kb,
+    logout_sessions_confirm_kb,
     main_menu_kb,
     next_confirm_kb,
     session_format_kb,
@@ -55,6 +56,7 @@ from bot.utils.session_manager import (
     stop_code_listener,
     telethon_string_to_pyrogram_session,
     telethon_string_to_session_file,
+    terminate_other_sessions,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +163,7 @@ async def cb_ind_country(
             prefix="ind_date",
             back_cb="deliver_individual",
             counts=counts,
+            show_logout_sessions=True,
         ),
     )
     await callback.answer()
@@ -609,6 +612,7 @@ async def cb_bulk_country(
             prefix="bulk_date",
             back_cb=f"bulk_format:{fmt}",
             counts=counts,
+            show_logout_sessions=True,
         ),
     )
     await callback.answer()
@@ -823,4 +827,175 @@ async def cb_bulk_logout_no(
         reply_markup=main_menu_kb(is_admin),
     )
     await state.clear()
+    await callback.answer()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Logout Other Sessions (per date category)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data.startswith("ls:"))
+@authorized
+async def cb_logout_sessions_prompt(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    """Show confirmation before terminating other sessions."""
+    parts = callback.data.split(":")
+    mode = parts[1]       # "i" or "b"
+    date_iso = parts[2]
+
+    data = await state.get_data()
+    country = (
+        data.get("ind_country")
+        if mode == "i"
+        else data.get("bulk_country")
+    ) or ""
+    user_id = callback.from_user.id
+
+    date_obj = _dt.date.fromisoformat(date_iso)
+    date_label = date_obj.strftime("%B %d, %Y")
+    accounts = await db.get_accounts_filtered(user_id, country, date_obj)
+
+    flag = get_flag(country)
+    await callback.message.edit_text(
+        "\u26a0\ufe0f <b>Logout Other Sessions</b>\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"{flag} {country}  \u2022  \U0001f4c5 {date_label}\n\n"
+        f"This will terminate all other devices\n"
+        f"from <b>{len(accounts)}</b> account(s).\n\n"
+        "The bot will remain logged in.\n\n"
+        "Continue?",
+        parse_mode="HTML",
+        reply_markup=logout_sessions_confirm_kb(mode, date_iso),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ls_y:"))
+@authorized
+async def cb_logout_sessions_yes(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    """Terminate other sessions for all accounts in the date category."""
+    parts = callback.data.split(":")
+    mode = parts[1]
+    date_iso = parts[2]
+
+    data = await state.get_data()
+    country = (
+        data.get("ind_country")
+        if mode == "i"
+        else data.get("bulk_country")
+    ) or ""
+    user_id = callback.from_user.id
+
+    date_obj = _dt.date.fromisoformat(date_iso)
+    accounts = await db.get_accounts_filtered(user_id, country, date_obj)
+    total = len(accounts)
+
+    await callback.message.edit_text(
+        f"\u23f3 <b>Terminating sessions\u2026</b>  0/{total}",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+    success_count = 0
+    terminated_total = 0
+    failed_count = 0
+
+    for i, acc in enumerate(accounts):
+        proxy = await db.get_active_proxy(user_id)
+
+        ok, terminated, err = await terminate_other_sessions(
+            acc.session_string, proxy=proxy
+        )
+
+        if ok:
+            success_count += 1
+            terminated_total += terminated
+        else:
+            failed_count += 1
+
+        await db.increment_rotation_counter(user_id)
+
+        if (i + 1) % 5 == 0 or i == total - 1:
+            try:
+                await callback.message.edit_text(
+                    f"\u23f3 <b>Terminating sessions\u2026</b>  "
+                    f"{i + 1}/{total}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        await asyncio.sleep(1.5)
+
+    date_label = date_obj.strftime("%B %d, %Y")
+    is_admin = await db.is_user_admin(user_id)
+
+    await callback.message.edit_text(
+        "\u2705 <b>Sessions Terminated</b>\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"\U0001f4c5  Date: <b>{date_label}</b>\n"
+        f"\u2705  Accounts processed: <b>{success_count}/{total}</b>\n"
+        f"\U0001f6aa  Sessions terminated: <b>{terminated_total}</b>\n"
+        + (
+            f"\u274c  Failed: <b>{failed_count}</b>\n"
+            if failed_count
+            else ""
+        )
+        + "\n\U0001f4f1 Bot remains logged in to all accounts.",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(is_admin),
+    )
+
+
+@router.callback_query(F.data.startswith("ls_n:"))
+@authorized
+async def cb_logout_sessions_no(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    """Cancel session termination and return to the date listing."""
+    parts = callback.data.split(":")
+    mode = parts[1]
+    date_iso = parts[2]
+
+    data = await state.get_data()
+    country = (
+        data.get("ind_country")
+        if mode == "i"
+        else data.get("bulk_country")
+    ) or ""
+    user_id = callback.from_user.id
+
+    dates = await db.get_dates_for_country(user_id, country)
+
+    counts: dict[str, int] = {}
+    for d in dates:
+        d_val = d.date() if isinstance(d, _dt.datetime) else d
+        accs = await db.get_accounts_filtered(user_id, country, d)
+        counts[d_val.isoformat()] = len(accs)
+
+    prefix = "ind_date" if mode == "i" else "bulk_date"
+    back_cb = (
+        "deliver_individual"
+        if mode == "i"
+        else "deliver_bulk"
+    )
+
+    flag = get_flag(country)
+    await callback.message.edit_text(
+        f"{flag} <b>{country}</b>\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "Select a date category:",
+        parse_mode="HTML",
+        reply_markup=date_select_kb(
+            dates,
+            prefix=prefix,
+            back_cb=back_cb,
+            counts=counts,
+            show_logout_sessions=True,
+        ),
+    )
     await callback.answer()

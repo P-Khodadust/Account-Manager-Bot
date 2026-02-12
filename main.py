@@ -32,6 +32,7 @@ from bot.handlers.add_user import router as add_user_router
 from bot.handlers.statistics import router as statistics_router
 from bot.handlers.deliver import router as deliver_router
 from bot.handlers.proxy import router as proxy_router
+from bot.handlers.twofa import router as twofa_router
 
 # ── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -132,6 +133,7 @@ async def main() -> None:
     dp.include_router(statistics_router)
     dp.include_router(deliver_router)
     dp.include_router(proxy_router)
+    dp.include_router(twofa_router)
 
     # Startup hook
     dp.startup.register(on_startup)
