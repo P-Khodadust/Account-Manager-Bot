@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -424,6 +425,8 @@ async def enable_2fa_on_account(
         if pwd.has_password:
             return False, "already_has_2fa"
 
+        # Extend salt1 with 32 random bytes (required by Telegram)
+        pwd.new_algo.salt1 += os.urandom(32)
         new_hash = compute_digest(pwd.new_algo, password)
 
         await client(
