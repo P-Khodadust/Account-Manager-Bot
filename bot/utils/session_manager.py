@@ -511,6 +511,330 @@ async def disable_2fa_on_account(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# @SpamBot Status Check
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def _classify_spam_reply(text: str) -> str:
+    """Classify @SpamBot's reply text into green/yellow/red/unknown."""
+    if not text:
+        return "unknown"
+    low = text.lower()
+    # Green: no limits ("free as a bird")
+    if "free as a bird" in low or "no limits are currently applied" in low:
+        return "green"
+    # Red: account is currently limited
+    if (
+        "while the account is limited" in low
+        or "your account was limited" in low
+        or ("hello" in low and "anti-spam" in low and "limited" in low)
+    ):
+        return "red"
+    # Yellow: warning about possible harsh response from anti-spam
+    if (
+        "may trigger a harsh response" in low
+        or "submit a complaint" in low
+        or "telegram premium to get less strict" in low
+    ):
+        return "yellow"
+    return "unknown"
+
+
+async def check_spam_status(
+    session_string: str,
+    proxy=None,
+    timeout: int = 15,
+) -> tuple[str, str]:
+    """Run /start against @SpamBot and classify the reply.
+
+    Returns ``(status, reply_text)`` where status is one of
+    ``"green" | "yellow" | "red" | "unknown"``.
+    """
+    client = create_client(session=session_string, proxy=proxy)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return "unknown", "session_expired"
+
+        bot = await client.get_entity("SpamBot")
+
+        reply_event = asyncio.Event()
+        captured: dict[str, str] = {"text": ""}
+
+        @client.on(events.NewMessage(from_users=bot.id))
+        async def _on_reply(event):  # type: ignore[misc]
+            if not reply_event.is_set():
+                captured["text"] = event.raw_text or ""
+                reply_event.set()
+
+        await client.send_message(bot, "/start")
+        try:
+            await asyncio.wait_for(reply_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return "unknown", ""
+
+        return _classify_spam_reply(captured["text"]), captured["text"]
+
+    except Exception as e:
+        logger.exception("Error checking spam status")
+        return "unknown", str(e)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Bulk Chat / Group Cleanup
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def delete_personal_chats_and_leave_groups(
+    session_string: str,
+    proxy=None,
+) -> tuple[int, int, int]:
+    """Delete every 1:1 chat (history) and leave every group/channel.
+
+    Bot's own session is preserved. Returns
+    ``(deleted_chats, left_groups, errors)``.
+    """
+    from telethon.tl.functions.messages import (
+        DeleteHistoryRequest,
+        DeleteChatUserRequest,
+    )
+    from telethon.tl.functions.channels import LeaveChannelRequest
+    from telethon.tl.types import (
+        InputPeerUser,
+        InputPeerChat,
+        InputPeerChannel,
+    )
+
+    deleted_chats = 0
+    left_groups = 0
+    errors = 0
+
+    client = create_client(session=session_string, proxy=proxy)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return 0, 0, 0
+
+        me = await client.get_me()
+
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            try:
+                if dialog.is_user:
+                    if getattr(entity, "is_self", False) or entity.id == me.id:
+                        continue
+                    await client(
+                        DeleteHistoryRequest(
+                            peer=entity,
+                            max_id=0,
+                            revoke=True,
+                        )
+                    )
+                    deleted_chats += 1
+                elif dialog.is_channel:
+                    await client(LeaveChannelRequest(entity))
+                    left_groups += 1
+                elif dialog.is_group:
+                    # Legacy chat — remove ourselves
+                    try:
+                        await client(
+                            DeleteChatUserRequest(
+                                chat_id=entity.id,
+                                user_id="me",
+                                revoke_history=False,
+                            )
+                        )
+                    except Exception:
+                        # Fallback: delete history
+                        await client(
+                            DeleteHistoryRequest(
+                                peer=entity,
+                                max_id=0,
+                                revoke=False,
+                            )
+                        )
+                    left_groups += 1
+            except Exception:
+                errors += 1
+                logger.exception(
+                    "Error cleaning dialog %s",
+                    getattr(entity, "id", "?"),
+                )
+            await asyncio.sleep(0.4)
+
+        return deleted_chats, left_groups, errors
+
+    except Exception:
+        logger.exception("Error during bulk chat cleanup")
+        return deleted_chats, left_groups, errors + 1
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Session File Import (ZIP upload flow)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def import_session_file_to_string(
+    session_file_path: Path,
+    proxy=None,
+) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+    """Read a Telethon ``.session`` file, validate it, terminate other
+    sessions on the account, and return ``(string_session, user_info, error)``.
+
+    On any failure ``(None, None, error_message)`` is returned.
+    """
+    try:
+        conn = sqlite3.connect(str(session_file_path))
+        c = conn.cursor()
+        c.execute(
+            "SELECT dc_id, server_address, port, auth_key "
+            "FROM sessions LIMIT 1"
+        )
+        row = c.fetchone()
+        conn.close()
+        if not row or not row[3]:
+            return None, None, "Session file is empty or unreadable."
+        dc_id, server_address, port, auth_key_bytes = row
+    except Exception as e:
+        logger.exception("Failed to read session file %s", session_file_path)
+        return None, None, f"Failed to read session file: {e}"
+
+    # Build a StringSession from the raw fields
+    from telethon.crypto import AuthKey
+
+    sess = StringSession()
+    sess.set_dc(dc_id, server_address, port)
+    sess.auth_key = AuthKey(auth_key_bytes)
+    string_session = sess.save()
+
+    # Validate by connecting
+    kwargs = _build_proxy_kwargs(proxy)
+    client = TelegramClient(
+        StringSession(string_session), API_ID, API_HASH, **kwargs
+    )
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return None, None, "Session is not authorized (expired)."
+
+        me = await client.get_me()
+        user_info = {
+            "id": me.id,
+            "first_name": me.first_name or "",
+            "username": me.username or "",
+            "phone": ("+" + me.phone) if me.phone and not me.phone.startswith("+") else (me.phone or ""),
+        }
+
+        # Terminate all other sessions so the file we just imported can't
+        # be reused outside the bot.
+        try:
+            from telethon.tl.functions.account import (
+                GetAuthorizationsRequest,
+                ResetAuthorizationRequest,
+            )
+
+            auths = await client(GetAuthorizationsRequest())
+            for auth in auths.authorizations:
+                if getattr(auth, "current", False) or auth.hash == 0:
+                    continue
+                try:
+                    await client(ResetAuthorizationRequest(hash=auth.hash))
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception(
+                "Failed to terminate other sessions for imported account"
+            )
+
+        return string_session, user_info, None
+    except Exception as e:
+        logger.exception("Error validating imported session")
+        return None, None, f"Validation error: {e}"
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TData (Telegram Desktop) Export
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def telethon_string_to_tdata_zip(
+    session_string: str,
+    output_zip_path: Path,
+    proxy=None,
+) -> bool:
+    """Convert a Telethon StringSession to a Telegram Desktop tdata zip.
+
+    Uses the ``opentele`` library. Returns True on success.
+    """
+    try:
+        from opentele.api import UseCurrentSession
+        from opentele.td import TDesktop
+        from opentele.tl import TelegramClient as OTeleClient
+    except Exception:
+        logger.exception("opentele is not installed")
+        return False
+
+    import shutil
+    import tempfile
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="tdata_"))
+    tdata_dir = tmp_dir / "tdata"
+    try:
+        kwargs = _build_proxy_kwargs(proxy)
+        client = OTeleClient(
+            StringSession(session_string), API_ID, API_HASH, **kwargs
+        )
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return False
+
+        try:
+            tdesk = await client.ToTDesktop(flag=UseCurrentSession)
+            tdesk.SaveTData(str(tdata_dir))
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+        # Zip the tdata folder
+        import zipfile
+
+        with zipfile.ZipFile(
+            output_zip_path, "w", zipfile.ZIP_DEFLATED
+        ) as zf:
+            for path in tdata_dir.rglob("*"):
+                if path.is_file():
+                    arcname = path.relative_to(tmp_dir)
+                    zf.write(path, arcname=str(arcname))
+        return True
+    except Exception:
+        logger.exception("Error converting to TData zip")
+        return False
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Terminate Other Sessions (keep bot's session only)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

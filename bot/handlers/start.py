@@ -29,21 +29,29 @@ WELCOME_TEXT = (
 @router.message(CommandStart())
 @authorized
 async def cmd_start(message: Message) -> None:
-    is_admin = await db.is_user_admin(message.from_user.id)
+    user_id = message.from_user.id
+    is_admin = await db.is_user_admin(user_id)
+    suspicious = await db.get_suspicious_accounts(user_id)
     await message.answer(
         WELCOME_TEXT,
         parse_mode="HTML",
-        reply_markup=main_menu_kb(is_admin),
+        reply_markup=main_menu_kb(
+            is_admin, has_suspicious=bool(suspicious)
+        ),
     )
 
 
 @router.callback_query(F.data == "main_menu")
 @authorized
 async def cb_main_menu(callback: CallbackQuery) -> None:
-    is_admin = await db.is_user_admin(callback.from_user.id)
+    user_id = callback.from_user.id
+    is_admin = await db.is_user_admin(user_id)
+    suspicious = await db.get_suspicious_accounts(user_id)
     await callback.message.edit_text(
         WELCOME_TEXT,
         parse_mode="HTML",
-        reply_markup=main_menu_kb(is_admin),
+        reply_markup=main_menu_kb(
+            is_admin, has_suspicious=bool(suspicious)
+        ),
     )
     await callback.answer()

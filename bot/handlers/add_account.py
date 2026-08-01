@@ -15,6 +15,9 @@ the counter is incremented.
 from __future__ import annotations
 
 import logging
+import tempfile
+import zipfile
+from pathlib import Path
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -24,8 +27,17 @@ from aiogram.types import CallbackQuery, Message
 from bot import database as db
 from bot.utils.decorators import authorized
 from bot.utils.keyboards import cancel_kb, main_menu_kb
-from bot.utils.country_detector import detect_country, format_phone_display, get_flag
-from bot.utils.session_manager import request_code, submit_code, submit_2fa
+from bot.utils.country_detector import (
+    detect_country,
+    format_phone_display,
+    get_flag,
+)
+from bot.utils.session_manager import (
+    import_session_file_to_string,
+    request_code,
+    submit_2fa,
+    submit_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +50,10 @@ class AddAccountStates(StatesGroup):
     waiting_phone = State()
     waiting_code = State()
     waiting_2fa = State()
+
+
+class ImportSessionsStates(StatesGroup):
+    waiting_zip = State()
 
 
 # ── Step 1: Start flow ──────────────────────────────────────────────
@@ -302,3 +318,174 @@ async def _save_account(
         )
 
     await state.clear()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Import Sessions from a ZIP of .session files
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data == "import_sessions")
+@authorized
+async def cb_import_sessions(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    await state.clear()
+    await callback.message.edit_text(
+        "📥 <b>Import Sessions</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Send a <b>ZIP file</b> containing one or more Telethon "
+        "<code>.session</code> files.\n\n"
+        "For each session imported the bot will:\n"
+        "  • Validate the session is authorised\n"
+        "  • <b>Terminate every other session</b> on the account so the "
+        "uploaded file becomes useless outside the bot\n"
+        "  • Replace any previous active row for that phone in your stats",
+        parse_mode="HTML",
+        reply_markup=cancel_kb(),
+    )
+    await state.set_state(ImportSessionsStates.waiting_zip)
+    await callback.answer()
+
+
+@router.message(ImportSessionsStates.waiting_zip, F.document)
+@authorized
+async def on_zip_received(message: Message, state: FSMContext) -> None:
+    doc = message.document
+    fname = (doc.file_name or "").lower()
+    mime = doc.mime_type or ""
+    if not (fname.endswith(".zip") or "zip" in mime):
+        await message.answer(
+            "⚠️ Please send a ZIP archive (.zip) of Telethon "
+            "<code>.session</code> files.",
+            parse_mode="HTML",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    user_id = message.from_user.id
+    proxy = await db.get_active_proxy(user_id)
+
+    await message.answer("⏳ Downloading and unpacking…")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="import_zip_"))
+    zip_path = tmp_dir / (doc.file_name or "upload.zip")
+    try:
+        await message.bot.download(doc, destination=zip_path)
+
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(tmp_dir)
+        except zipfile.BadZipFile:
+            await message.answer(
+                "❌ The uploaded file is not a valid ZIP archive.",
+                reply_markup=cancel_kb(),
+            )
+            await state.clear()
+            return
+
+        session_files = [
+            p for p in tmp_dir.rglob("*.session") if p.is_file()
+        ]
+
+        if not session_files:
+            await message.answer(
+                "❌ No <code>.session</code> files were found inside the "
+                "ZIP archive.",
+                parse_mode="HTML",
+                reply_markup=cancel_kb(),
+            )
+            await state.clear()
+            return
+
+        imported = 0
+        failed = 0
+        skipped: list[str] = []
+
+        for sf in session_files:
+            try:
+                string_session, user_info, error = (
+                    await import_session_file_to_string(sf, proxy=proxy)
+                )
+            except Exception:
+                logger.exception("Failed importing %s", sf)
+                failed += 1
+                continue
+
+            if error or not string_session or not user_info:
+                failed += 1
+                skipped.append(f"{sf.name}: {error or 'unknown error'}")
+                continue
+
+            phone = user_info.get("phone") or sf.stem
+            if not phone.startswith("+"):
+                phone = "+" + phone.lstrip("+")
+
+            try:
+                country = detect_country(phone)
+            except Exception:
+                country = "Unknown"
+
+            try:
+                await db.add_account(
+                    owner_id=user_id,
+                    phone=phone,
+                    country=country,
+                    session_string=string_session,
+                    tg_user_id=user_info.get("id"),
+                    first_name=user_info.get("first_name"),
+                    username=user_info.get("username"),
+                )
+                imported += 1
+            except Exception:
+                logger.exception("DB save failed for imported %s", phone)
+                failed += 1
+                skipped.append(f"{phone}: db error")
+
+        suspicious = await db.get_suspicious_accounts(user_id)
+        is_admin = await db.is_user_admin(user_id)
+        summary_lines = [
+            "✅ <b>Import complete</b>",
+            "━━━━━━━━━━━━",
+            "",
+            f"📥  Files in ZIP: <b>{len(session_files)}</b>",
+            f"✅  Imported: <b>{imported}</b>",
+        ]
+        if failed:
+            summary_lines.append(f"❌  Failed: <b>{failed}</b>")
+        if skipped:
+            summary_lines.append("")
+            summary_lines.append("<i>Failures:</i>")
+            for s in skipped[:10]:
+                summary_lines.append(f"  • <code>{s}</code>")
+            if len(skipped) > 10:
+                summary_lines.append(
+                    f"  • … and {len(skipped) - 10} more"
+                )
+
+        await message.answer(
+            "\n".join(summary_lines),
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(
+                is_admin, has_suspicious=bool(suspicious)
+            ),
+        )
+    finally:
+        try:
+            import shutil
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        await state.clear()
+
+
+@router.message(ImportSessionsStates.waiting_zip)
+@authorized
+async def on_zip_wrong_input(
+    message: Message, state: FSMContext
+) -> None:
+    await message.answer(
+        "⚠️ Please send a ZIP file (attachment), not text.",
+        reply_markup=cancel_kb(),
+    )

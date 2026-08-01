@@ -22,9 +22,13 @@ def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
+def main_menu_kb(
+    is_admin: bool = False,
+    has_suspicious: bool = False,
+) -> InlineKeyboardMarkup:
     buttons = [
         [_btn("\U0001f511  Grant Account Access", "add_account")],
+        [_btn("\U0001f4e5  Import Sessions (.zip)", "import_sessions")],
         [
             _btn("\U0001f4ca  Statistics", "statistics"),
             _btn("\U0001f4e6  Deliver", "deliver_menu"),
@@ -32,6 +36,10 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         [_btn("\U0001f310  Proxy Settings", "proxy_menu")],
         [_btn("\U0001f510  2FA Settings", "twofa_menu")],
     ]
+    if has_suspicious:
+        buttons.append(
+            [_btn("❗  Suspicious Accounts", "suspicious_list")]
+        )
     if is_admin:
         buttons.append(
             [_btn("\U0001f464  Manage Users", "manage_users")]
@@ -99,7 +107,14 @@ def deliver_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn("\U0001f4f1  Individual Delivery", "deliver_individual")],
-            [_btn("\U0001f4c1  Bulk Session Files", "deliver_bulk")],
+            [_btn("\U0001f4c1  Bulk — By Date", "deliver_bulk")],
+            [
+                _btn(
+                    "\U0001f4e6  Bulk — By Country (All Dates)",
+                    "deliver_bulk_country",
+                )
+            ],
+            [_btn("\U0001f30d  Bulk — All Accounts", "deliver_bulk_all")],
             [_btn("\U0001f519  Back", "main_menu")],
         ]
     )
@@ -136,9 +151,19 @@ def date_select_kb(
         if show_logout_sessions:
             mode = "i" if "ind" in prefix else "b"
             row.append(_btn("\U0001f6aa", f"ls:{mode}:{iso}"))
+            row.append(_btn("✅", f"ck:{mode}:{iso}"))
+            row.append(_btn("\U0001f5d1", f"tr:{mode}:{iso}"))
         buttons.append(row)
     buttons.append([_btn("\U0001f519  Back", back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _spam_emoji(status: str | None) -> str:
+    return {
+        "green": "\U0001f7e2",
+        "yellow": "\U0001f7e1",
+        "red": "\U0001f534",
+    }.get(status or "unknown", "⚪")
 
 
 def account_list_kb(
@@ -150,20 +175,110 @@ def account_list_kb(
     for acc in accounts:
         phone = acc.phone
         name = f" \u2014 {acc.first_name}" if acc.first_name else ""
+        emoji = _spam_emoji(getattr(acc, "spam_status", None))
+        sus = " \u2757" if getattr(acc, "is_suspicious", False) else ""
         buttons.append(
-            [_btn(f"\U0001f4f1  {phone}{name}", f"{prefix}:{acc.id}")]
+            [
+                _btn(
+                    f"{emoji}  {phone}{name}{sus}",
+                    f"{prefix}:{acc.id}",
+                )
+            ]
         )
     buttons.append([_btn("\U0001f519  Back", back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def session_format_kb() -> InlineKeyboardMarkup:
+def session_format_kb(
+    back_cb: str = "deliver_menu",
+    callback_prefix: str = "bulk_format",
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn("\U0001f4f1  Telethon Session", "bulk_format:telethon")],
-            [_btn("\U0001f4f1  Pyrogram Session", "bulk_format:pyrogram")],
-            [_btn("\U0001f519  Back", "deliver_menu")],
+            [
+                _btn(
+                    "\U0001f4f1  Telethon Session",
+                    f"{callback_prefix}:telethon",
+                )
+            ],
+            [
+                _btn(
+                    "\U0001f4f1  Pyrogram Session",
+                    f"{callback_prefix}:pyrogram",
+                )
+            ],
+            [_btn("\U0001f5a5  TData (Desktop)", f"{callback_prefix}:tdata")],
+            [_btn("\U0001f519  Back", back_cb)],
         ]
+    )
+
+
+def bulk_post_delivery_kb() -> InlineKeyboardMarkup:
+    """Yes/No prompt after a bulk delivery completes."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(
+                    "\u2705  Yes \u2014 remove from stats",
+                    "bd_yes",
+                ),
+                _btn(
+                    "\u274c  No \u2014 invalidate file",
+                    "bd_no",
+                ),
+            ]
+        ]
+    )
+
+
+def bulk_status_filter_prompt_kb() -> InlineKeyboardMarkup:
+    """Ask the user whether to apply spam classification to delivered accounts."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn("\u2705  Apply classification", "bd_classify_yes"),
+                _btn("\u274c  Skip", "bd_classify_no"),
+            ]
+        ]
+    )
+
+
+def bulk_status_remove_kb() -> InlineKeyboardMarkup:
+    """After classification, offer to remove accounts by status."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f534  Remove Red", "bd_rm:red")],
+            [_btn("\U0001f7e1  Remove Yellow", "bd_rm:yellow")],
+            [_btn("\U0001f7e2  Remove Green", "bd_rm:green")],
+            [_btn("\u2705  Done", "bd_rm:done")],
+        ]
+    )
+
+
+def trash_confirm_kb(mode: str, key: str) -> InlineKeyboardMarkup:
+    """Confirm bulk chat deletion. ``key`` is the date iso or scope id."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(
+                    "\u2705  Yes, delete chats",
+                    f"tr_y:{mode}:{key}",
+                )
+            ],
+            [_btn("\u274c  Cancel", f"tr_n:{mode}:{key}")],
+        ]
+    )
+
+
+def bulk_country_format_kb(scope: str) -> InlineKeyboardMarkup:
+    """Session-format selector reused for the new bulk scopes.
+
+    ``scope`` is ``"country"`` (then country picker next) or ``"all"``.
+    """
+    prefix = f"bulk{scope}_format"
+    return session_format_kb(
+        back_cb="deliver_menu",
+        callback_prefix=prefix,
     )
 
 

@@ -81,6 +81,9 @@ class Account(Base):
     is_active = Column(Boolean, default=True)
     status = Column(String(16), default="active")
     has_2fa = Column(Boolean, default=False)
+    spam_status = Column(String(8), default="unknown")
+    spam_checked_at = Column(DateTime, nullable=True)
+    is_suspicious = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # No unique constraint — same phone can be re-added after logout
@@ -138,6 +141,7 @@ async def run_migrations() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(_migrate_accounts_table)
         await conn.run_sync(_add_twofa_columns)
+        await conn.run_sync(_add_health_columns)
     await _migrate_area_codes()
     logger.info("Migrations complete.")
 
@@ -254,6 +258,37 @@ def _add_twofa_columns(connection) -> None:
                 )
             )
             logger.info("Added twofa_password column to user_settings.")
+
+
+def _add_health_columns(connection) -> None:
+    """Add spam_status, spam_checked_at, is_suspicious columns."""
+    insp = inspect(connection)
+
+    if "accounts" not in insp.get_table_names():
+        return
+
+    cols = {c["name"] for c in insp.get_columns("accounts")}
+    if "spam_status" not in cols:
+        connection.execute(
+            text(
+                "ALTER TABLE accounts "
+                "ADD COLUMN spam_status VARCHAR(8) DEFAULT 'unknown'"
+            )
+        )
+        logger.info("Added spam_status column to accounts.")
+    if "spam_checked_at" not in cols:
+        connection.execute(
+            text("ALTER TABLE accounts ADD COLUMN spam_checked_at DATETIME")
+        )
+        logger.info("Added spam_checked_at column to accounts.")
+    if "is_suspicious" not in cols:
+        connection.execute(
+            text(
+                "ALTER TABLE accounts "
+                "ADD COLUMN is_suspicious BOOLEAN DEFAULT 0"
+            )
+        )
+        logger.info("Added is_suspicious column to accounts.")
 
 
 async def _migrate_area_codes() -> None:
@@ -569,6 +604,71 @@ async def get_statistics(user_id: int) -> dict:
         countries[c]["dates"][d] = countries[c]["dates"].get(d, 0) + 1
 
     return {"total": total, "countries": countries}
+
+
+async def get_all_accounts_for_owner(user_id: int) -> list[Account]:
+    """Active accounts for a user (any country, any date)."""
+    return await get_all_active_accounts(user_id)
+
+
+async def get_accounts_for_country(
+    user_id: int, country: str
+) -> list[Account]:
+    """Active accounts in a country across every date."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Account)
+            .where(
+                and_(
+                    Account.owner_id == user_id,
+                    Account.country == country,
+                    Account.is_active == True,  # noqa: E712
+                )
+            )
+            .order_by(Account.date_added.desc(), Account.id)
+        )
+        return list(result.scalars().all())
+
+
+async def get_suspicious_accounts(user_id: int) -> list[Account]:
+    """All accounts (active or not) flagged is_suspicious for a user."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Account)
+            .where(
+                and_(
+                    Account.owner_id == user_id,
+                    Account.is_suspicious == True,  # noqa: E712
+                )
+            )
+            .order_by(Account.id.desc())
+        )
+        return list(result.scalars().all())
+
+
+async def set_spam_status(account_id: int, spam_status: str) -> None:
+    """Persist a spam-status classification (green/yellow/red/unknown)."""
+    async with async_session() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(
+                spam_status=spam_status,
+                spam_checked_at=datetime.utcnow(),
+            )
+        )
+        await session.commit()
+
+
+async def mark_suspicious(account_id: int, suspicious: bool = True) -> None:
+    """Flag an account as suspicious without changing is_active."""
+    async with async_session() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(is_suspicious=suspicious)
+        )
+        await session.commit()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

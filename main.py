@@ -23,6 +23,7 @@ from bot.database import (
     get_all_active_accounts,
     get_default_proxy,
     mark_account_status,
+    mark_suspicious,
 )
 
 # ── Handlers ─────────────────────────────────────────────────────────
@@ -46,11 +47,13 @@ logger = logging.getLogger(__name__)
 
 # ── Periodic Session Validation ──────────────────────────────────────
 
-async def periodic_session_check() -> None:
+async def periodic_session_check(bot: Bot) -> None:
     """Validate all stored sessions every 6 hours.
 
     Marks removed / banned accounts as inactive automatically so
-    statistics stay accurate without manual intervention.
+    statistics stay accurate without manual intervention. The owner
+    is DM'd whenever a session ends unexpectedly so they know it
+    became suspicious and was removed from their stats.
     """
     from bot.utils.session_manager import validate_session
 
@@ -74,6 +77,7 @@ async def periodic_session_check() -> None:
                         )
                         if status in ("removed", "invalid"):
                             await mark_account_status(acc.id, status)
+                            await mark_suspicious(acc.id, True)
                             invalidated += 1
                             logger.info(
                                 "Auto-detected: account %s (%s) → %s",
@@ -81,6 +85,29 @@ async def periodic_session_check() -> None:
                                 acc.id,
                                 status,
                             )
+                            try:
+                                reason = (
+                                    "logged out elsewhere"
+                                    if status == "removed"
+                                    else "deactivated/banned"
+                                )
+                                await bot.send_message(
+                                    acc.owner_id,
+                                    "⚠️ <b>Session expired</b>\n"
+                                    "━━━━━━━━━━━━\n\n"
+                                    f"📱 <code>{acc.phone}</code>\n"
+                                    f"Reason: <i>{reason}</i>\n\n"
+                                    "The account has been marked as "
+                                    "<b>suspicious</b> and removed "
+                                    "from your statistics.",
+                                    parse_mode="HTML",
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to notify owner of expired "
+                                    "session for %s",
+                                    acc.phone,
+                                )
                     except Exception:
                         pass  # skip individual errors
                     # Small delay between accounts to avoid flooding
@@ -107,7 +134,7 @@ async def on_startup(bot: Bot) -> None:
     await ensure_admin(ADMIN_ID)
 
     # Launch background session validator
-    asyncio.create_task(periodic_session_check())
+    asyncio.create_task(periodic_session_check(bot))
 
     me = await bot.get_me()
     logger.info(

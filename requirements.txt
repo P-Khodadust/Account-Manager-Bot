@@ -9,3 +9,4 @@ python-dotenv==1.0.1
 python-socks[asyncio]==2.7.1
 PySocks==1.7.1
 cryptography==44.0.0
+opentele==1.15.1

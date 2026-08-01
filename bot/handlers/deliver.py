@@ -39,6 +39,10 @@ from bot.utils.decorators import authorized
 from bot.utils.keyboards import (
     account_actions_kb,
     account_list_kb,
+    bulk_country_format_kb,
+    bulk_post_delivery_kb,
+    bulk_status_filter_prompt_kb,
+    bulk_status_remove_kb,
     cancel_kb,
     confirm_kb,
     country_select_kb,
@@ -49,13 +53,17 @@ from bot.utils.keyboards import (
     main_menu_kb,
     next_confirm_kb,
     session_format_kb,
+    trash_confirm_kb,
 )
 from bot.utils.session_manager import (
+    check_spam_status,
+    delete_personal_chats_and_leave_groups,
     logout_account,
     start_code_listener,
     stop_code_listener,
     telethon_string_to_pyrogram_session,
     telethon_string_to_session_file,
+    telethon_string_to_tdata_zip,
     terminate_other_sessions,
 )
 
@@ -523,7 +531,7 @@ async def _move_to_next_account(
 async def cb_deliver_bulk(
     callback: CallbackQuery, state: FSMContext
 ) -> None:
-    await state.update_data(delivery_mode="bulk")
+    await state.update_data(delivery_mode="bulk", bulk_scope="date")
     await callback.message.edit_text(
         "\U0001f4c1 <b>Bulk Session Delivery</b>\n"
         "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
@@ -539,7 +547,7 @@ async def cb_deliver_bulk(
 async def cb_bulk_format(
     callback: CallbackQuery, state: FSMContext
 ) -> None:
-    fmt = callback.data.split(":")[1]  # "telethon" or "pyrogram"
+    fmt = callback.data.split(":")[1]  # "telethon" / "pyrogram" / "tdata"
     user_id = callback.from_user.id
 
     countries = await db.get_countries_for_owner(user_id)
@@ -550,7 +558,11 @@ async def cb_bulk_format(
         return
 
     await state.update_data(bulk_format=fmt)
-    fmt_label = "Telethon" if fmt == "telethon" else "Pyrogram"
+    fmt_label = {
+        "telethon": "Telethon",
+        "pyrogram": "Pyrogram",
+        "tdata": "TData (Desktop)",
+    }.get(fmt, fmt)
 
     await callback.message.edit_text(
         f"\U0001f4c1 <b>Bulk Delivery</b> \u2014 <b>{fmt_label}</b>\n"
@@ -649,21 +661,48 @@ async def cb_bulk_date(
 @authorized
 async def on_bulk_quantity(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    country = data.get("bulk_country", "")
-    date_iso = data.get("bulk_date", "")
+    scope = data.get("bulk_scope", "date")
     fmt = data.get("bulk_format", "telethon")
+    user_id = message.from_user.id
 
-    date_obj = _dt.date.fromisoformat(date_iso)
-    accounts = await db.get_accounts_filtered(
-        message.from_user.id, country, date_obj
-    )
+    if scope == "date":
+        country = data.get("bulk_country", "")
+        date_iso = data.get("bulk_date", "")
+        date_obj = _dt.date.fromisoformat(date_iso)
+        accounts = await db.get_accounts_filtered(
+            user_id, country, date_obj
+        )
+        scope_label = (
+            f"{get_flag(country)}  Country: <b>{country}</b>\n"
+            f"\U0001f4c5  Date: "
+            f"<b>{date_obj.strftime('%B %d, %Y')}</b>\n"
+        )
+        filename_prefix = (
+            f"{country.replace(' ', '_')}_"
+            f"{date_obj.strftime('%Y-%m-%d')}"
+        )
+        cancel_back = "deliver_bulk"
+    elif scope == "country":
+        country = data.get("bulk_country", "")
+        accounts = await db.get_accounts_for_country(user_id, country)
+        scope_label = (
+            f"{get_flag(country)}  Country: <b>{country}</b>\n"
+            "\U0001f4c5  Dates: <b>all</b>\n"
+        )
+        filename_prefix = f"{country.replace(' ', '_')}_alldates"
+        cancel_back = "deliver_bulk_country"
+    else:
+        accounts = await db.get_all_accounts_for_owner(user_id)
+        scope_label = "\U0001f30d  Scope: <b>All accounts</b>\n"
+        filename_prefix = "all_accounts"
+        cancel_back = "deliver_bulk_all"
 
     try:
         qty = int(message.text.strip())
     except ValueError:
         await message.answer(
             "\u26a0\ufe0f Please enter a valid number.",
-            reply_markup=cancel_kb("deliver_bulk"),
+            reply_markup=cancel_kb(cancel_back),
         )
         return
 
@@ -671,7 +710,7 @@ async def on_bulk_quantity(message: Message, state: FSMContext) -> None:
         await message.answer(
             f"\u26a0\ufe0f Please enter a number between 1 and "
             f"{len(accounts)}.",
-            reply_markup=cancel_kb("deliver_bulk"),
+            reply_markup=cancel_kb(cancel_back),
         )
         return
 
@@ -681,145 +720,129 @@ async def on_bulk_quantity(message: Message, state: FSMContext) -> None:
         "\u23f3 Converting sessions and creating ZIP file\u2026"
     )
 
-    # ── Create ZIP in memory ──
-    zip_buffer = io.BytesIO()
-    date_label = date_obj.strftime("%Y-%m-%d")
-    ext = ".session"
+    proxy = await db.get_active_proxy(user_id)
+    zip_data = await _build_bulk_zip(selected, fmt, proxy)
 
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for acc in selected:
-            with tempfile.NamedTemporaryFile(
-                suffix=ext, delete=False
-            ) as tmp:
-                tmp_path = Path(tmp.name)
+    fmt_label = {
+        "telethon": "Telethon",
+        "pyrogram": "Pyrogram",
+        "tdata": "TData (Desktop)",
+    }.get(fmt, fmt)
 
-            try:
-                if fmt == "telethon":
-                    success = telethon_string_to_session_file(
-                        acc.session_string, tmp_path
-                    )
-                else:
-                    success = telethon_string_to_pyrogram_session(
-                        acc.session_string,
-                        tmp_path,
-                        user_id=acc.tg_user_id or 0,
-                    )
-
-                if success:
-                    with open(tmp_path, "rb") as f:
-                        file_data = f.read()
-                    safe_phone = (
-                        acc.phone.replace("+", "").replace(" ", "")
-                    )
-                    zf.writestr(f"{safe_phone}.session", file_data)
-            except Exception:
-                logger.exception(
-                    "Failed to convert session for %s", acc.phone
-                )
-            finally:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-    zip_buffer.seek(0)
-    zip_data = zip_buffer.getvalue()
-
-    safe_country = country.replace(" ", "_")
-    zip_filename = (
-        f"{safe_country}_{date_label}_{fmt}_{qty}accounts.zip"
-    )
-    fmt_label = "Telethon" if fmt == "telethon" else "Pyrogram"
+    zip_filename = f"{filename_prefix}_{fmt}_{qty}accounts.zip"
 
     await message.answer_document(
         BufferedInputFile(zip_data, filename=zip_filename),
         caption=(
-            f"\U0001f4c1 <b>Session Files Delivered!</b>\n\n"
+            "\U0001f4c1 <b>Session Files Delivered!</b>\n\n"
             f"\U0001f4e6  Format: <b>{fmt_label}</b>\n"
-            f"{get_flag(country)}  Country: <b>{country}</b>\n"
-            f"\U0001f4c5  Date: "
-            f"<b>{date_obj.strftime('%B %d, %Y')}</b>\n"
+            f"{scope_label}"
             f"\U0001f4ca  Accounts: <b>{qty}</b>"
         ),
         parse_mode="HTML",
     )
 
-    # Store IDs for potential logout
     selected_ids = [acc.id for acc in selected]
-    await state.update_data(bulk_delivered_ids=selected_ids)
-    await state.set_state(None)
-
-    await message.answer(
-        "\U0001f512 <b>Log out of delivered accounts?</b>\n\n"
-        "Would you like to log out all delivered accounts\n"
-        "and remove them from your statistics?",
-        parse_mode="HTML",
-        reply_markup=confirm_kb("bulk_logout_yes", "bulk_logout_no"),
-    )
+    await _post_delivery_prompt(message, state, selected_ids)
 
 
-@router.callback_query(F.data == "bulk_logout_yes")
-@authorized
-async def cb_bulk_logout_yes(
-    callback: CallbackQuery, state: FSMContext
-) -> None:
-    data = await state.get_data()
-    delivered_ids = data.get("bulk_delivered_ids", [])
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Shared bulk helpers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    if not delivered_ids:
-        await callback.answer(
-            "No accounts to log out.", show_alert=True
-        )
-        await state.clear()
-        return
 
-    await callback.message.edit_text(
-        "\u23f3 Logging out accounts\u2026 This may take a moment.",
-        parse_mode="HTML",
-    )
-
-    proxy = await db.get_active_proxy(callback.from_user.id)
-    success_count = 0
-
-    for acc_id in delivered_ids:
-        acc = await db.get_account_by_id(acc_id)
-        if acc:
+async def _build_bulk_zip(
+    accounts: list,
+    fmt: str,
+    proxy=None,
+) -> bytes:
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for acc in accounts:
+            safe_phone = acc.phone.replace("+", "").replace(" ", "")
             try:
-                await logout_account(acc.session_string, proxy=proxy)
-                success_count += 1
+                if fmt == "telethon":
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".session", delete=False
+                    ) as tmp:
+                        tmp_path = Path(tmp.name)
+                    try:
+                        if telethon_string_to_session_file(
+                            acc.session_string, tmp_path
+                        ):
+                            zf.writestr(
+                                f"{safe_phone}.session",
+                                tmp_path.read_bytes(),
+                            )
+                    finally:
+                        try:
+                            tmp_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                elif fmt == "pyrogram":
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".session", delete=False
+                    ) as tmp:
+                        tmp_path = Path(tmp.name)
+                    try:
+                        if telethon_string_to_pyrogram_session(
+                            acc.session_string,
+                            tmp_path,
+                            user_id=acc.tg_user_id or 0,
+                        ):
+                            zf.writestr(
+                                f"{safe_phone}.session",
+                                tmp_path.read_bytes(),
+                            )
+                    finally:
+                        try:
+                            tmp_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                elif fmt == "tdata":
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".zip", delete=False
+                    ) as tmp:
+                        tmp_path = Path(tmp.name)
+                    try:
+                        ok = await telethon_string_to_tdata_zip(
+                            acc.session_string, tmp_path, proxy=proxy
+                        )
+                        if ok:
+                            zf.writestr(
+                                f"{safe_phone}_tdata.zip",
+                                tmp_path.read_bytes(),
+                            )
+                    finally:
+                        try:
+                            tmp_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
             except Exception:
-                logger.exception("Failed to logout account %s", acc_id)
-
-    await db.deactivate_accounts(delivered_ids)
-
-    is_admin = await db.is_user_admin(callback.from_user.id)
-    await callback.message.edit_text(
-        f"\u2705 <b>Logout Complete</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        f"\U0001f6aa  Logged out: "
-        f"<b>{success_count}/{len(delivered_ids)}</b> accounts\n"
-        f"\U0001f4ca  Statistics updated.",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb(is_admin),
-    )
-    await state.clear()
-    await callback.answer()
+                logger.exception(
+                    "Failed to convert session for %s", acc.phone
+                )
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
 
 
-@router.callback_query(F.data == "bulk_logout_no")
-@authorized
-async def cb_bulk_logout_no(
-    callback: CallbackQuery, state: FSMContext
+async def _post_delivery_prompt(
+    message: Message,
+    state: FSMContext,
+    delivered_ids: list[int],
 ) -> None:
-    is_admin = await db.is_user_admin(callback.from_user.id)
-    await callback.message.edit_text(
-        "\u2705 Accounts kept active.\n\n"
-        "Returning to main menu.",
+    await state.update_data(bulk_delivered_ids=delivered_ids)
+    await state.set_state(None)
+    await message.answer(
+        "❔ <b>Remove delivered accounts from statistics?</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "✅ <b>Yes</b> — accounts removed from stats; "
+        "the bot stays logged in.\n"
+        "❌ <b>No</b> — other sessions are terminated so "
+        "the file you just received is invalidated; accounts stay in stats.",
         parse_mode="HTML",
-        reply_markup=main_menu_kb(is_admin),
+        reply_markup=bulk_post_delivery_kb(),
     )
-    await state.clear()
-    await callback.answer()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -989,5 +1012,625 @@ async def cb_logout_sessions_no(
             counts=counts,
             show_logout_sessions=True,
         ),
+    )
+    await callback.answer()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Bulk: post-delivery Yes/No
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data == "bd_yes")
+@authorized
+async def cb_bd_yes(callback: CallbackQuery, state: FSMContext) -> None:
+    """Yes → deactivate (remove from stats); bot stays logged in."""
+    data = await state.get_data()
+    ids = data.get("bulk_delivered_ids", [])
+    if not ids:
+        await callback.answer("Nothing to do.", show_alert=True)
+        return
+
+    await db.deactivate_accounts(ids, status="delivered_removed")
+
+    await callback.message.edit_text(
+        "✅ <b>Removed from statistics</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"\U0001f4ca {len(ids)} account(s) deactivated.\n"
+        "The bot remains logged in inside each account.\n\n"
+        "Do you want to apply spam-status classification\n"
+        "(green / yellow / red) to the delivered accounts?",
+        parse_mode="HTML",
+        reply_markup=bulk_status_filter_prompt_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "bd_no")
+@authorized
+async def cb_bd_no(callback: CallbackQuery, state: FSMContext) -> None:
+    """No → terminate other sessions so the delivered file is unusable."""
+    data = await state.get_data()
+    ids = data.get("bulk_delivered_ids", [])
+    if not ids:
+        await callback.answer("Nothing to do.", show_alert=True)
+        return
+
+    total = len(ids)
+    await callback.message.edit_text(
+        f"⏳ <b>Invalidating delivered files…</b>  0/{total}",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+    proxy = await db.get_active_proxy(callback.from_user.id)
+    success = 0
+    terminated_total = 0
+    for i, acc_id in enumerate(ids):
+        acc = await db.get_account_by_id(acc_id)
+        if acc:
+            try:
+                ok, terminated, _ = await terminate_other_sessions(
+                    acc.session_string, proxy=proxy
+                )
+                if ok:
+                    success += 1
+                    terminated_total += terminated
+            except Exception:
+                logger.exception("Failed terminating sessions for %s", acc_id)
+        if (i + 1) % 5 == 0 or i == total - 1:
+            try:
+                await callback.message.edit_text(
+                    f"⏳ <b>Invalidating delivered files…</b>  "
+                    f"{i + 1}/{total}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        await asyncio.sleep(1.5)
+
+    await callback.message.edit_text(
+        "✅ <b>Delivered files invalidated</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"\U0001f6aa  Sessions terminated: <b>{terminated_total}</b>\n"
+        f"✅  Accounts processed: <b>{success}/{total}</b>\n"
+        "Accounts remain in your statistics.\n\n"
+        "Do you want to apply spam-status classification\n"
+        "(green / yellow / red) to these accounts?",
+        parse_mode="HTML",
+        reply_markup=bulk_status_filter_prompt_kb(),
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Bulk: optional spam-status classification
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data == "bd_classify_no")
+@authorized
+async def cb_bd_classify_no(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    is_admin = await db.is_user_admin(callback.from_user.id)
+    suspicious = await db.get_suspicious_accounts(callback.from_user.id)
+    await callback.message.edit_text(
+        "✅ Done. Returning to main menu.",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(is_admin, has_suspicious=bool(suspicious)),
+    )
+    await state.clear()
+    await callback.answer()
+
+
+@router.callback_query(F.data == "bd_classify_yes")
+@authorized
+async def cb_bd_classify_yes(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    """Run @SpamBot status check across delivered accounts."""
+    data = await state.get_data()
+    ids = data.get("bulk_delivered_ids", [])
+    if not ids:
+        await callback.answer("Nothing to classify.", show_alert=True)
+        return
+
+    proxy = await db.get_active_proxy(callback.from_user.id)
+    counts, breakdown = await _run_status_sweep(callback, ids, proxy)
+    await state.update_data(bulk_classify_counts=counts)
+
+    await callback.message.edit_text(
+        _format_status_summary(counts, breakdown)
+        + "\n\nUse the buttons below to remove accounts by status.",
+        parse_mode="HTML",
+        reply_markup=bulk_status_remove_kb(),
+    )
+
+
+@router.callback_query(F.data.startswith("bd_rm:"))
+@authorized
+async def cb_bd_rm(callback: CallbackQuery, state: FSMContext) -> None:
+    color = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    ids = data.get("bulk_delivered_ids", [])
+
+    if color == "done":
+        is_admin = await db.is_user_admin(callback.from_user.id)
+        suspicious = await db.get_suspicious_accounts(
+            callback.from_user.id
+        )
+        await callback.message.edit_text(
+            "✅ Classification complete. Returning to main menu.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(
+                is_admin, has_suspicious=bool(suspicious)
+            ),
+        )
+        await state.clear()
+        await callback.answer()
+        return
+
+    matching: list[int] = []
+    for acc_id in ids:
+        acc = await db.get_account_by_id(acc_id)
+        if acc and acc.spam_status == color:
+            matching.append(acc_id)
+
+    if not matching:
+        await callback.answer(
+            f"No {color} accounts to remove.", show_alert=True
+        )
+        return
+
+    await db.deactivate_accounts(matching, status=f"removed_{color}")
+    await callback.answer(
+        f"Removed {len(matching)} {color} account(s).", show_alert=True
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Bulk by Country (all dates) and Bulk All Accounts
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data == "deliver_bulk_country")
+@authorized
+async def cb_deliver_bulk_country(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    countries = await db.get_countries_for_owner(callback.from_user.id)
+    if not countries:
+        await callback.answer(
+            "📭 You don't have any accounts.", show_alert=True
+        )
+        return
+    await state.update_data(bulk_scope="country")
+    await callback.message.edit_text(
+        "\U0001f4e6 <b>Bulk — By Country (All Dates)</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Choose the session file format:",
+        parse_mode="HTML",
+        reply_markup=bulk_country_format_kb("country"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bulkcountry_format:"))
+@authorized
+async def cb_bulkcountry_format(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    fmt = callback.data.split(":", 1)[1]
+    countries = await db.get_countries_for_owner(callback.from_user.id)
+    await state.update_data(bulk_format=fmt, bulk_scope="country")
+
+    await callback.message.edit_text(
+        "\U0001f4e6 <b>Bulk — By Country (All Dates)</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Select a country:",
+        parse_mode="HTML",
+        reply_markup=country_select_kb(
+            countries,
+            prefix="bulkc_country",
+            back_cb="deliver_bulk_country",
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bulkc_country:"))
+@authorized
+async def cb_bulkc_country(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    country = callback.data.split(":", 1)[1]
+    user_id = callback.from_user.id
+    accounts = await db.get_accounts_for_country(user_id, country)
+    if not accounts:
+        await callback.answer(
+            "📭 No accounts in this country.", show_alert=True
+        )
+        return
+
+    await state.update_data(bulk_country=country)
+
+    await callback.message.edit_text(
+        f"\U0001f4e6 <b>Bulk — {country}</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"\U0001f4ca Available accounts: <b>{len(accounts)}</b>\n\n"
+        f"How many accounts do you want to export?\n"
+        f"<i>Enter a number (1–{len(accounts)}):</i>",
+        parse_mode="HTML",
+        reply_markup=cancel_kb("deliver_bulk_country"),
+    )
+    await state.set_state(DeliverStates.bulk_waiting_quantity)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "deliver_bulk_all")
+@authorized
+async def cb_deliver_bulk_all(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    accounts = await db.get_all_accounts_for_owner(callback.from_user.id)
+    if not accounts:
+        await callback.answer(
+            "📭 You don't have any accounts.", show_alert=True
+        )
+        return
+    await state.update_data(bulk_scope="all")
+    await callback.message.edit_text(
+        "\U0001f30d <b>Bulk — All Accounts</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Choose the session file format:",
+        parse_mode="HTML",
+        reply_markup=bulk_country_format_kb("all"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bulkall_format:"))
+@authorized
+async def cb_bulkall_format(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    fmt = callback.data.split(":", 1)[1]
+    user_id = callback.from_user.id
+    accounts = await db.get_all_accounts_for_owner(user_id)
+    await state.update_data(bulk_format=fmt, bulk_scope="all")
+
+    await callback.message.edit_text(
+        "\U0001f30d <b>Bulk — All Accounts</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"\U0001f4ca Available accounts: <b>{len(accounts)}</b>\n\n"
+        f"How many accounts do you want to export?\n"
+        f"<i>Enter a number (1–{len(accounts)}):</i>",
+        parse_mode="HTML",
+        reply_markup=cancel_kb("deliver_bulk_all"),
+    )
+    await state.set_state(DeliverStates.bulk_waiting_quantity)
+    await callback.answer()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# @SpamBot Status Sweep helpers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def _format_progress_bar(done: int, total: int, width: int = 20) -> str:
+    if total <= 0:
+        return ""
+    filled = int(width * done / total)
+    return "[" + "█" * filled + "░" * (width - filled) + "]"
+
+
+async def _run_status_sweep(
+    callback: CallbackQuery,
+    account_ids: list[int],
+    proxy,
+) -> tuple[dict[str, int], list[tuple[str, str]]]:
+    total = len(account_ids)
+    counts = {"green": 0, "yellow": 0, "red": 0, "unknown": 0}
+    breakdown: list[tuple[str, str]] = []
+    auto_removed_red: list[int] = []
+
+    for i, acc_id in enumerate(account_ids):
+        acc = await db.get_account_by_id(acc_id)
+        if not acc:
+            counts["unknown"] += 1
+            continue
+        try:
+            status, _text = await check_spam_status(
+                acc.session_string, proxy=proxy
+            )
+        except Exception:
+            logger.exception("Status check failed for %s", acc.phone)
+            status = "unknown"
+
+        await db.set_spam_status(acc_id, status)
+        counts[status] = counts.get(status, 0) + 1
+        breakdown.append((acc.phone, status))
+
+        if status == "red":
+            auto_removed_red.append(acc_id)
+
+        if (i + 1) % 3 == 0 or i == total - 1:
+            done = i + 1
+            bar = _format_progress_bar(done, total)
+            try:
+                await callback.message.edit_text(
+                    "✅ <b>Status Sweep</b>\n"
+                    "━━━━━━━━━━━━\n\n"
+                    f"Checked: <b>{done}/{total}</b>\n"
+                    f"<code>{bar}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        await asyncio.sleep(1.0)
+
+    if auto_removed_red:
+        await db.deactivate_accounts(
+            auto_removed_red, status="auto_removed_red"
+        )
+
+    return counts, breakdown
+
+
+def _format_status_summary(
+    counts: dict[str, int],
+    breakdown: list[tuple[str, str]],
+) -> str:
+    total = sum(counts.values()) or 1
+    pct = {k: round(100 * v / total) for k, v in counts.items()}
+    bar = _format_progress_bar(
+        counts.get("green", 0) + counts.get("yellow", 0),
+        total,
+    )
+    lines = [
+        "✅ <b>Status Sweep Complete</b>",
+        "━━━━━━━━━━━━",
+        "",
+        f"\U0001f7e2  Green:  <b>{counts.get('green', 0)}</b>  "
+        f"({pct.get('green', 0)}%)",
+        f"\U0001f7e1  Yellow: <b>{counts.get('yellow', 0)}</b>  "
+        f"({pct.get('yellow', 0)}%)",
+        f"\U0001f534  Red:    <b>{counts.get('red', 0)}</b>  "
+        f"({pct.get('red', 0)}%)  <i>(auto-removed)</i>",
+    ]
+    if counts.get("unknown"):
+        lines.append(
+            f"⚪  Unknown: <b>{counts['unknown']}</b>  "
+            f"({pct.get('unknown', 0)}%)"
+        )
+    lines.append("")
+    lines.append(f"<code>{bar}</code>")
+    return "\n".join(lines)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ✅ Per-date Status Check Button
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data.startswith("ck:"))
+@authorized
+async def cb_status_check(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    parts = callback.data.split(":")
+    mode = parts[1]
+    date_iso = parts[2]
+    user_id = callback.from_user.id
+
+    data = await state.get_data()
+    country = (
+        data.get("ind_country")
+        if mode == "i"
+        else data.get("bulk_country")
+    ) or ""
+
+    date_obj = _dt.date.fromisoformat(date_iso)
+    accounts = await db.get_accounts_filtered(user_id, country, date_obj)
+    if not accounts:
+        await callback.answer("No accounts here.", show_alert=True)
+        return
+
+    proxy = await db.get_active_proxy(user_id)
+    await callback.message.edit_text(
+        "⏳ <b>Status Sweep</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"Checking <b>{len(accounts)}</b> account(s) via @SpamBot…",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+    ids = [a.id for a in accounts]
+    counts, breakdown = await _run_status_sweep(callback, ids, proxy)
+
+    is_admin = await db.is_user_admin(user_id)
+    suspicious = await db.get_suspicious_accounts(user_id)
+    await callback.message.edit_text(
+        _format_status_summary(counts, breakdown),
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(is_admin, has_suspicious=bool(suspicious)),
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🗑 Trash — bulk chat / group cleanup
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data.startswith("tr:"))
+@authorized
+async def cb_trash_prompt(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    parts = callback.data.split(":")
+    mode = parts[1]
+    date_iso = parts[2]
+
+    data = await state.get_data()
+    country = (
+        data.get("ind_country")
+        if mode == "i"
+        else data.get("bulk_country")
+    ) or ""
+
+    date_obj = _dt.date.fromisoformat(date_iso)
+    date_label = date_obj.strftime("%B %d, %Y")
+    accounts = await db.get_accounts_filtered(
+        callback.from_user.id, country, date_obj
+    )
+
+    flag = get_flag(country)
+    await callback.message.edit_text(
+        "\U0001f5d1 <b>Bulk Chat Cleanup</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"{flag} {country}  •  📅 {date_label}\n\n"
+        f"Delete every 1:1 chat and leave every group/channel\n"
+        f"on <b>{len(accounts)}</b> account(s)?\n\n"
+        "<i>The bot remains logged in.</i>",
+        parse_mode="HTML",
+        reply_markup=trash_confirm_kb(mode, date_iso),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tr_n:"))
+@authorized
+async def cb_trash_no(callback: CallbackQuery, state: FSMContext) -> None:
+    is_admin = await db.is_user_admin(callback.from_user.id)
+    await callback.message.edit_text(
+        "✅ Cancelled.",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(is_admin),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tr_y:"))
+@authorized
+async def cb_trash_yes(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = callback.data.split(":")
+    mode = parts[1]
+    date_iso = parts[2]
+
+    data = await state.get_data()
+    country = (
+        data.get("ind_country")
+        if mode == "i"
+        else data.get("bulk_country")
+    ) or ""
+
+    date_obj = _dt.date.fromisoformat(date_iso)
+    user_id = callback.from_user.id
+    accounts = await db.get_accounts_filtered(user_id, country, date_obj)
+    total = len(accounts)
+
+    await callback.message.edit_text(
+        f"⏳ <b>Cleaning chats…</b>  0/{total}",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+    proxy = await db.get_active_proxy(user_id)
+    chats_total = 0
+    groups_total = 0
+    err_total = 0
+    for i, acc in enumerate(accounts):
+        try:
+            chats, groups, errs = (
+                await delete_personal_chats_and_leave_groups(
+                    acc.session_string, proxy=proxy
+                )
+            )
+            chats_total += chats
+            groups_total += groups
+            err_total += errs
+        except Exception:
+            logger.exception("Trash failed for %s", acc.phone)
+            err_total += 1
+
+        if (i + 1) % 2 == 0 or i == total - 1:
+            try:
+                await callback.message.edit_text(
+                    f"⏳ <b>Cleaning chats…</b>  {i + 1}/{total}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        await asyncio.sleep(1.5)
+
+    is_admin = await db.is_user_admin(user_id)
+    suspicious = await db.get_suspicious_accounts(user_id)
+    await callback.message.edit_text(
+        "✅ <b>Bulk Chat Cleanup Complete</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"📂  Accounts processed: <b>{total}</b>\n"
+        f"🧹  1:1 chats deleted: <b>{chats_total}</b>\n"
+        f"👥  Groups/channels left: <b>{groups_total}</b>\n"
+        + (f"⚠️  Errors: <b>{err_total}</b>\n" if err_total else "")
+        + "\nThe bot remains logged in to every account.",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(is_admin, has_suspicious=bool(suspicious)),
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Suspicious accounts list
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.callback_query(F.data == "suspicious_list")
+@authorized
+async def cb_suspicious_list(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    user_id = callback.from_user.id
+    items = await db.get_suspicious_accounts(user_id)
+    is_admin = await db.is_user_admin(user_id)
+
+    if not items:
+        await callback.message.edit_text(
+            "❗ <b>Suspicious Accounts</b>\n"
+            "━━━━━━━━━━━━\n\n"
+            "No suspicious accounts. 🎉",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(is_admin),
+        )
+        await callback.answer()
+        return
+
+    lines = [
+        "❗ <b>Suspicious Accounts</b>",
+        "━━━━━━━━━━━━",
+        "",
+        "<i>Sessions that ended unexpectedly. They've been "
+        "removed from your statistics.</i>",
+        "",
+    ]
+    for acc in items[:50]:
+        when = (
+            acc.spam_checked_at.strftime("%Y-%m-%d %H:%M")
+            if acc.spam_checked_at
+            else (
+                acc.created_at.strftime("%Y-%m-%d")
+                if acc.created_at
+                else "-"
+            )
+        )
+        lines.append(
+            f"📱 <code>{acc.phone}</code>  •  "
+            f"status: <b>{acc.status}</b>  •  {when}"
+        )
+    if len(items) > 50:
+        lines.append(f"\n<i>… and {len(items) - 50} more.</i>")
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(is_admin, has_suspicious=True),
     )
     await callback.answer()
