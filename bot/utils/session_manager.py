@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -604,12 +604,6 @@ async def delete_personal_chats_and_leave_groups(
         DeleteChatUserRequest,
     )
     from telethon.tl.functions.channels import LeaveChannelRequest
-    from telethon.tl.types import (
-        InputPeerUser,
-        InputPeerChat,
-        InputPeerChannel,
-    )
-
     deleted_chats = 0
     left_groups = 0
     errors = 0
@@ -783,7 +777,6 @@ async def telethon_string_to_tdata_zip(
     """
     try:
         from opentele.api import UseCurrentSession
-        from opentele.td import TDesktop
         from opentele.tl import TelegramClient as OTeleClient
     except Exception:
         logger.exception("opentele is not installed")

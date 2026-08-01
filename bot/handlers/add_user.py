@@ -14,11 +14,10 @@ from aiogram.types import CallbackQuery, Message
 
 from bot import database as db
 from bot.config import ADMIN_ID
-from bot.utils.decorators import authorized, admin_only
+from bot.utils.decorators import admin_only
 from bot.utils.keyboards import (
     manage_users_kb,
     user_detail_kb,
-    confirm_kb,
     cancel_kb,
     main_menu_kb,
 )

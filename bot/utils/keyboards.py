@@ -5,7 +5,6 @@ Inline keyboard builders — glass-style design with emojis.
 from __future__ import annotations
 
 import datetime as _dt
-from typing import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -214,16 +213,16 @@ def session_format_kb(
 
 
 def bulk_post_delivery_kb() -> InlineKeyboardMarkup:
-    """Yes/No prompt after a bulk delivery completes."""
+    """Choose whether successfully sent accounts remain active."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 _btn(
-                    "\u2705  Yes \u2014 remove from stats",
+                    "\U0001f5d1  Remove After Send",
                     "bd_yes",
                 ),
                 _btn(
-                    "\u274c  No \u2014 invalidate file",
+                    "\u2705  Keep Active",
                     "bd_no",
                 ),
             ]
@@ -243,14 +242,86 @@ def bulk_status_filter_prompt_kb() -> InlineKeyboardMarkup:
     )
 
 
-def bulk_status_remove_kb() -> InlineKeyboardMarkup:
-    """After classification, offer to remove accounts by status."""
+def status_actions_kb(
+    counts: dict[str, int] | None = None,
+) -> InlineKeyboardMarkup:
+    """Offer explicit export and removal actions after a status sweep."""
+    counts = counts or {}
+
+    def label(emoji: str, color: str) -> str:
+        return f"{emoji}  Export {color.title()} ({counts.get(color, 0)})"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn("\U0001f534  Remove Red", "bd_rm:red")],
-            [_btn("\U0001f7e1  Remove Yellow", "bd_rm:yellow")],
-            [_btn("\U0001f7e2  Remove Green", "bd_rm:green")],
-            [_btn("\u2705  Done", "bd_rm:done")],
+            [
+                _btn(label("\U0001f7e2", "green"), "sf_export:green"),
+                _btn(label("\U0001f7e1", "yellow"), "sf_export:yellow"),
+            ],
+            [
+                _btn(label("\U0001f534", "red"), "sf_export:red"),
+                _btn(label("⚪", "unknown"), "sf_export:unknown"),
+            ],
+            [_btn("\U0001f5d1  Remove by Status", "sf_remove_menu")],
+            [_btn("\u2705  Done", "sf_done")],
+        ]
+    )
+
+
+def status_remove_kb(
+    counts: dict[str, int] | None = None,
+) -> InlineKeyboardMarkup:
+    """Offer deliberate, status-specific removal actions."""
+    counts = counts or {}
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(
+                    f"\U0001f7e2  Remove Green ({counts.get('green', 0)})",
+                    "sf_rm:green",
+                )
+            ],
+            [
+                _btn(
+                    f"\U0001f7e1  Remove Yellow ({counts.get('yellow', 0)})",
+                    "sf_rm:yellow",
+                )
+            ],
+            [
+                _btn(
+                    f"\U0001f534  Remove Red ({counts.get('red', 0)})",
+                    "sf_rm:red",
+                )
+            ],
+            [
+                _btn(
+                    f"⚪  Remove Unknown ({counts.get('unknown', 0)})",
+                    "sf_rm:unknown",
+                )
+            ],
+            [_btn("\U0001f519  Back", "sf_back")],
+        ]
+    )
+
+
+def status_export_format_kb(color: str) -> InlineKeyboardMarkup:
+    """Choose the format for a status-filtered archive."""
+    return session_format_kb(
+        back_cb="sf_back",
+        callback_prefix=f"sf_fmt:{color}",
+    )
+
+
+def status_post_export_kb(color: str) -> InlineKeyboardMarkup:
+    """Choose whether successfully sent filtered accounts stay active."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(
+                    "\U0001f5d1  Remove After Send",
+                    f"sf_sent_rm:{color}",
+                )
+            ],
+            [_btn("\u2705  Keep Active", "sf_back")],
         ]
     )
 

@@ -23,7 +23,6 @@ from bot.utils.crypto import decrypt_password, encrypt_password
 from bot.utils.decorators import authorized
 from bot.utils.keyboards import (
     cancel_kb,
-    main_menu_kb,
     twofa_disable_confirm_kb,
     twofa_menu_kb,
 )
@@ -123,7 +122,6 @@ async def on_2fa_password_received(
     except Exception:
         pass
 
-    is_admin = await db.is_user_admin(message.from_user.id)
     await message.answer(
         "\u2705 <b>2FA Password Saved</b>\n"
         "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"

@@ -8,7 +8,6 @@ import functools
 import logging
 from typing import Callable, Any
 
-from aiogram import types
 from aiogram.types import CallbackQuery, Message
 
 from bot import database as db

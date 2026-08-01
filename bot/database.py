@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from typing import Optional
-
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -39,6 +37,8 @@ from sqlalchemy.orm import DeclarativeBase
 from bot.config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
+
+_SQL_IN_BATCH_SIZE = 500
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -143,6 +143,7 @@ async def run_migrations() -> None:
         await conn.run_sync(_add_twofa_columns)
         await conn.run_sync(_add_health_columns)
     await _migrate_area_codes()
+    await _restore_auto_removed_spam_accounts()
     logger.info("Migrations complete.")
 
 
@@ -317,6 +318,23 @@ async def _migrate_area_codes() -> None:
             )
 
 
+async def _restore_auto_removed_spam_accounts() -> None:
+    """Undo the legacy sweep behavior that deactivated Red accounts."""
+    async with async_session() as session:
+        result = await session.execute(
+            update(Account)
+            .where(Account.status == "auto_removed_red")
+            .values(is_active=True, status="active")
+        )
+        await session.commit()
+        if result.rowcount:
+            logger.info(
+                "Restored %d account(s) previously auto-removed by "
+                "spam sweeps.",
+                result.rowcount,
+            )
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Authorized Users
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -455,17 +473,61 @@ async def add_account(
         return account
 
 
-async def get_account_by_id(account_id: int) -> Account | None:
+async def get_account_by_id(
+    account_id: int,
+    *,
+    owner_id: int | None = None,
+    include_inactive: bool = False,
+) -> Account | None:
+    """Return an account by ID with optional owner and activity guards."""
     async with async_session() as session:
-        result = await session.execute(
-            select(Account).where(
-                and_(
-                    Account.id == account_id,
-                    Account.is_active == True,  # noqa: E712
-                )
-            )
-        )
+        filters = [Account.id == account_id]
+        if owner_id is not None:
+            filters.append(Account.owner_id == owner_id)
+        if not include_inactive:
+            filters.append(Account.is_active == True)  # noqa: E712
+        result = await session.execute(select(Account).where(and_(*filters)))
         return result.scalar_one_or_none()
+
+
+async def get_accounts_by_ids(
+    user_id: int,
+    account_ids: list[int],
+    *,
+    include_inactive: bool = False,
+) -> list[Account]:
+    """Return owner-scoped accounts in the same order as ``account_ids``.
+
+    Status workflows may opt into inactive rows because an account can be
+    removed from statistics immediately after delivery and classified later.
+    """
+    if not account_ids:
+        return []
+
+    accounts_by_id: dict[int, Account] = {}
+    async with async_session() as session:
+        for offset in range(0, len(account_ids), _SQL_IN_BATCH_SIZE):
+            batch = account_ids[offset:offset + _SQL_IN_BATCH_SIZE]
+            filters = [
+                Account.owner_id == user_id,
+                Account.id.in_(batch),
+            ]
+            if not include_inactive:
+                filters.append(Account.is_active == True)  # noqa: E712
+            result = await session.execute(
+                select(Account).where(and_(*filters))
+            )
+            accounts_by_id.update(
+                {
+                    account.id: account
+                    for account in result.scalars().all()
+                }
+            )
+    return [
+        accounts_by_id[account_id]
+        for account_id in account_ids
+        if account_id in accounts_by_id
+    ]
 
 
 async def get_countries_for_owner(user_id: int) -> list[str]:
@@ -538,16 +600,35 @@ async def deactivate_account(
 async def deactivate_accounts(
     account_ids: list[int],
     status: str = "logged_out",
-) -> None:
+    *,
+    user_id: int | None = None,
+) -> int:
+    """Deactivate accounts and return the number of affected rows.
+
+    Pass ``user_id`` for user-triggered operations so IDs from another owner
+    can never be changed through stale or forged callback state.
+    """
     if not account_ids:
-        return
+        return 0
+    affected = 0
     async with async_session() as session:
-        await session.execute(
-            update(Account)
-            .where(Account.id.in_(account_ids))
-            .values(is_active=False, status=status)
-        )
+        for offset in range(0, len(account_ids), _SQL_IN_BATCH_SIZE):
+            batch = account_ids[offset:offset + _SQL_IN_BATCH_SIZE]
+            filters = [
+                Account.id.in_(batch),
+                Account.is_active == True,  # noqa: E712
+            ]
+            if user_id is not None:
+                filters.append(Account.owner_id == user_id)
+            result = await session.execute(
+                update(Account)
+                .where(and_(*filters))
+                .values(is_active=False, status=status)
+            )
+            if result.rowcount and result.rowcount > 0:
+                affected += result.rowcount
         await session.commit()
+        return affected
 
 
 async def mark_account_status(account_id: int, status: str) -> None:
@@ -646,12 +727,20 @@ async def get_suspicious_accounts(user_id: int) -> list[Account]:
         return list(result.scalars().all())
 
 
-async def set_spam_status(account_id: int, spam_status: str) -> None:
+async def set_spam_status(
+    account_id: int,
+    spam_status: str,
+    *,
+    user_id: int | None = None,
+) -> None:
     """Persist a spam-status classification (green/yellow/red/unknown)."""
+    filters = [Account.id == account_id]
+    if user_id is not None:
+        filters.append(Account.owner_id == user_id)
     async with async_session() as session:
         await session.execute(
             update(Account)
-            .where(Account.id == account_id)
+            .where(and_(*filters))
             .values(
                 spam_status=spam_status,
                 spam_checked_at=datetime.utcnow(),
@@ -868,7 +957,7 @@ async def set_twofa_password(
     encrypted_password: str,
 ) -> None:
     """Store an encrypted 2FA password for a user."""
-    settings = await get_user_settings(user_id)  # ensures row exists
+    await get_user_settings(user_id)  # ensures row exists
     async with async_session() as session:
         await session.execute(
             update(UserSettings)
