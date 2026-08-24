@@ -177,25 +177,36 @@ def date_select_kb(
     page: int = 0,
     page_cb: str | None = None,
 ) -> InlineKeyboardMarkup:
+    # Action rows double the row count and add three buttons per date;
+    # keep pages small enough to respect Telegram's 100-button limit.
+    page_len = 20 if show_logout_sessions else PAGE_SIZE
+
     buttons = []
     total_pages = 1
-    if page_cb and len(dates) > PAGE_SIZE:
-        total_pages = (len(dates) + PAGE_SIZE - 1) // PAGE_SIZE
+    if page_cb and len(dates) > page_len:
+        total_pages = (len(dates) + page_len - 1) // page_len
         page = max(0, min(page, total_pages - 1))
-        dates = dates[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+        dates = dates[page * page_len:(page + 1) * page_len]
     for d in dates:
         if isinstance(d, _dt.datetime):
             d = d.date()
         label = d.strftime("%B %d, %Y")
         iso = d.isoformat()
         count_str = f"  ({counts[iso]})" if counts and iso in counts else ""
-        row = [_btn(f"\U0001f4c5  {label}{count_str}", f"{prefix}:{iso}")]
+        date_btn = _btn(f"\U0001f4c5  {label}{count_str}", f"{prefix}:{iso}")
         if show_logout_sessions:
             mode = "i" if "ind" in prefix else "b"
-            row.append(_btn("\U0001f6aa", f"ls:{mode}:{iso}"))
-            row.append(_btn("✅", f"ck:{mode}:{iso}"))
-            row.append(_btn("\U0001f5d1", f"tr:{mode}:{iso}"))
-        buttons.append(row)
+            # Full-width date line, then its own action line
+            buttons.append([date_btn])
+            buttons.append(
+                [
+                    _btn("\U0001f6aa", f"ls:{mode}:{iso}"),
+                    _btn("✅", f"ck:{mode}:{iso}"),
+                    _btn("\U0001f5d1", f"tr:{mode}:{iso}"),
+                ]
+            )
+        else:
+            buttons.append([date_btn])
     if page_cb:
         buttons.extend(_pager_rows(page, total_pages, page_cb))
     buttons.append([_btn("\U0001f519  Back", back_cb)])
