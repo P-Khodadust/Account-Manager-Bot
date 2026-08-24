@@ -31,7 +31,7 @@ from telethon.errors import (
     SessionPasswordNeededError,
     UserDeactivatedBanError,
 )
-from telethon.tl.functions.auth import LogOutRequest
+from telethon.tl.functions.auth import LogOutRequest, ResendCodeRequest
 
 from bot.config import API_ID, API_HASH
 
@@ -152,6 +152,43 @@ def _delivery_type(sent) -> str:
     return name
 
 
+async def _resend_if_app_delivery(
+    client: TelegramClient, phone: str, sent
+):
+    """Force an SMS/call fallback when Telegram sent the code in-app.
+
+    Recycled virtual numbers often still have an active Telegram
+    session from a previous owner. Telegram then delivers the login
+    code inside that app session instead of by SMS, and it never
+    reaches us. ``auth.ResendCodeRequest`` is the official
+    "send it another way" path.
+    """
+    if _delivery_type(sent) != "telegram-app":
+        return sent
+
+    logger.info(
+        "App-only delivery for %s — requesting resend via SMS/call",
+        phone,
+    )
+    try:
+        resent = await client(
+            ResendCodeRequest(phone, sent.phone_code_hash)
+        )
+        logger.info(
+            "Resend for %s delivered via %s",
+            phone,
+            _delivery_type(resent),
+        )
+        return resent
+    except Exception as e:
+        logger.warning(
+            "Resend fallback failed for %s: %s — keeping app delivery",
+            phone,
+            e,
+        )
+        return sent
+
+
 # Transient network errors worth a single retry during code requests
 _TRANSIENT_NET_ERRORS = (
     asyncio.IncompleteReadError,
@@ -185,6 +222,7 @@ async def request_code(
             )
             await client.connect()
             sent = await _send_code_with_dc_migration(client, phone)
+            sent = await _resend_if_app_delivery(client, phone, sent)
             result.needs_code = True
             result.phone_code_hash = sent.phone_code_hash
             result.delivery_type = _delivery_type(sent)
