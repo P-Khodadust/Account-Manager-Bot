@@ -15,6 +15,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import BOT_TOKEN, ADMIN_ID
+from bot.middlewares import SuppressNotModifiedMiddleware
 from bot.database import (
     init_db,
     ensure_admin,
@@ -152,6 +153,11 @@ async def main() -> None:
     )
 
     dp = Dispatcher(storage=MemoryStorage())
+
+    # Ignore "message is not modified" from double-clicked inline buttons
+    not_modified_mw = SuppressNotModifiedMiddleware()
+    dp.callback_query.outer_middleware(not_modified_mw)
+    dp.message.outer_middleware(not_modified_mw)
 
     # Register routers (order matters — first match wins for FSM states)
     dp.include_router(start_router)

@@ -159,9 +159,21 @@ async def on_code_received(message: Message, state: FSMContext) -> None:
     code = message.text.strip()
     data = await state.get_data()
 
-    phone = data["phone"]
-    phone_code_hash = data["phone_code_hash"]
+    phone = data.get("phone")
+    phone_code_hash = data.get("phone_code_hash")
     pending_session = data.get("pending_session")
+
+    if not phone or not phone_code_hash or not pending_session:
+        # FSM data lost (e.g. bot restarted mid-flow, MemoryStorage wiped)
+        await state.clear()
+        await message.answer(
+            "\u26a0\ufe0f <b>Login session expired</b>\n\n"
+            "The login flow was interrupted. Please start again via "
+            "<b>Grant Account Access</b>.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(),
+        )
+        return
 
     # Reconnect client with the pending session
     from bot.utils.session_manager import create_client
@@ -221,6 +233,18 @@ async def on_2fa_received(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     pending_session = data.get("pending_session")
 
+    if not pending_session or not data.get("phone"):
+        # FSM data lost (e.g. bot restarted mid-flow, MemoryStorage wiped)
+        await state.clear()
+        await message.answer(
+            "\u26a0\ufe0f <b>Login session expired</b>\n\n"
+            "The login flow was interrupted. Please start again via "
+            "<b>Grant Account Access</b>.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(),
+        )
+        return
+
     proxy = await db.get_active_proxy(message.from_user.id)
 
     from bot.utils.session_manager import create_client
@@ -256,8 +280,19 @@ async def _save_account(
     message: Message, state: FSMContext, result
 ) -> None:
     data = await state.get_data()
-    phone = data["phone"]
-    country = data["country"]
+    phone = data.get("phone")
+    country = data.get("country")
+    if not phone or not country:
+        # Defensive: FSM data lost between login steps
+        await state.clear()
+        await message.answer(
+            "\u26a0\ufe0f <b>Login session expired</b>\n\n"
+            "The account was logged in but could not be saved. "
+            "Please add it again via <b>Grant Account Access</b>.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(),
+        )
+        return
     display_phone = format_phone_display(phone)
 
     try:

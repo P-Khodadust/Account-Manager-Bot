@@ -23,9 +23,11 @@ from telethon.sessions import StringSession
 from telethon.errors import (
     AuthKeyUnregisteredError,
     FloodWaitError,
+    NetworkMigrateError,
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
+    PhoneMigrateError,
     SessionPasswordNeededError,
     UserDeactivatedBanError,
 )
@@ -111,35 +113,91 @@ def create_client(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+async def _send_code_with_dc_migration(
+    client: TelegramClient, phone: str
+):
+    """Send a code request, following DC-migration errors.
+
+    Telegram raises ``PhoneMigrateError`` when the phone number's home
+    data center differs from the one we connected to. Telethon does not
+    handle this itself — switch to the correct DC and retry once.
+    """
+    try:
+        return await client.send_code_request(phone)
+    except (PhoneMigrateError, NetworkMigrateError) as e:
+        logger.info(
+            "DC migration required for %s (new_dc=%s), retrying",
+            phone,
+            e.new_dc,
+        )
+        await client._switch_dc(e.new_dc)
+        await client.connect()
+        return await client.send_code_request(phone)
+
+
+# Transient network errors worth a single retry during code requests
+_TRANSIENT_NET_ERRORS = (
+    asyncio.IncompleteReadError,
+    asyncio.TimeoutError,
+    ConnectionError,
+    OSError,
+)
+
+
 async def request_code(
     phone: str,
     proxy=None,
 ) -> tuple[TelegramClient, CodeResult]:
     """Send a login code request to the given phone number.
 
-    Used during the *account addition* flow (the bot actively sends the code).
+    Used during the *account addition* flow (the bot actively sends the
+    code).  Retries once on transient proxy/network failures.
     Returns ``(client, result)``.
     """
     client = create_client(proxy=proxy)
     result = CodeResult()
 
-    try:
-        await client.connect()
-        sent = await client.send_code_request(phone)
-        result.needs_code = True
-        result.phone_code_hash = sent.phone_code_hash
-        return client, result
+    for attempt in (1, 2):
+        try:
+            await client.connect()
+            sent = await _send_code_with_dc_migration(client, phone)
+            result.needs_code = True
+            result.phone_code_hash = sent.phone_code_hash
+            return client, result
 
-    except FloodWaitError as e:
-        result.error = (
-            f"\u23f3 Too many attempts. Please wait <b>{e.seconds}</b> seconds."
-        )
-        return client, result
+        except FloodWaitError as e:
+            result.error = (
+                f"\u23f3 Too many attempts. Please wait <b>{e.seconds}</b> seconds."
+            )
+            return client, result
 
-    except Exception as e:
-        logger.exception("Error requesting code for %s", phone)
-        result.error = f"\u274c Error: {e}"
-        return client, result
+        except _TRANSIENT_NET_ERRORS as e:
+            logger.warning(
+                "Transient network error requesting code for %s "
+                "(attempt %d/2): %s",
+                phone,
+                attempt,
+                e,
+            )
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            if attempt == 1:
+                await asyncio.sleep(2)
+                continue
+            result.error = (
+                "\u274c Network error while reaching Telegram. "
+                "Please try again in a moment."
+            )
+            return client, result
+
+        except Exception as e:
+            logger.exception("Error requesting code for %s", phone)
+            result.error = f"\u274c Error: {e}"
+            return client, result
+
+    return client, result
 
 
 async def submit_code(

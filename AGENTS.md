@@ -1,42 +1,40 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## What This Is
 
-`main.py` configures logging, initializes the database, registers aiogram routers, and starts polling. Application code lives under `bot/`:
+Telegram account-manager bot (aiogram 3.x) that stores/delivers Telegram accounts via session strings. `main.py` is the entry point: logging, DB init, router registration, polling, plus a background task that validates sessions every 6 hours. Code lives under `bot/`:
 
-- `bot/config.py` loads environment variables and defines runtime paths.
-- `bot/database.py` contains SQLAlchemy models, migrations, and data-access helpers.
-- `bot/handlers/` groups Telegram command, callback, and FSM flows by feature.
-- `bot/utils/` contains shared session, proxy, cryptography, keyboard, authorization, and country-detection helpers.
+- `bot/config.py` — env loading (`BOT_TOKEN`, `API_ID`, `API_HASH`, `ADMIN_ID`, `DATABASE_URL`) and paths
+- `bot/database.py` — SQLAlchemy async models, CRUD, **and all migrations**
+- `bot/handlers/` — one module per feature flow (start, add_account, add_user, statistics, deliver, proxy, twofa)
+- `bot/utils/` — shared helpers: session_manager (Telethon), crypto, keyboards, decorators (auth), country_detector, status_workflow
 
-Runtime data is created in `data/` and `sessions/`; neither should be committed. Add tests under `tests/`, mirroring the package structure (for example, `tests/utils/test_country_detector.py`).
+## Critical Gotchas
 
-## Build, Test, and Development Commands
+- **Env vars are required at import time**: `bot/config.py` raises `RuntimeError` on import if `BOT_TOKEN`/`API_ID`/`API_HASH`/`ADMIN_ID` are missing. Anything importing it transitively fails without `.env`. To keep code testable, put pure logic in dependency-free modules (like `bot/utils/status_workflow.py`) and keep Telegram/DB imports out of them.
+- **Migrations are hand-rolled** — there is no Alembic. Schema changes require adding a migration step to `run_migrations()` in `bot/database.py` (see `_migrate_accounts_table`, `_add_twofa_columns` for the inspect-then-alter pattern).
+- **FSM router order matters**: routers are registered in `main.py`; first match wins for FSM states, so add new routers deliberately.
+- **Default parse mode is HTML** (set via `DefaultBotProperties`) — message text uses HTML tags, not Markdown.
+- **2FA passwords are Fernet-encrypted with a key derived from `BOT_TOKEN`** (`bot/utils/crypto.py`). Changing `BOT_TOKEN` breaks decryption of stored passwords. `ENCRYPTION_KEY` is loaded in config but currently unused.
+- `data/` and `sessions/` are auto-created at import and gitignored; both hold sensitive runtime state (DB, session files).
 
-Use Python 3.11+ and an isolated environment:
+## Commands
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python main.py
+python -m compileall main.py bot          # syntax check without touching Telegram
+python -m unittest discover -s tests -v   # unit suite (dependency-free, runs without .env)
 ```
 
-`python main.py` initializes the database and runs long polling. There is no build step. Check syntax without contacting Telegram with `python -m compileall main.py bot`. Run the dependency-free unit suite with `python -m unittest discover -s tests -v`.
+Run the app: Python 3.11+ venv, `pip install -r requirements.txt`, `cp .env.example .env`, then `python main.py` (initializes DB, runs migrations, starts long polling). No build step, no lint/typecheck tooling configured.
 
-## Coding Style & Naming Conventions
+## Conventions
 
-Follow PEP 8 with four-space indentation, type annotations for public interfaces, and concise docstrings for non-obvious behavior. Use `snake_case` for modules, functions, variables, and callback identifiers; `PascalCase` for classes; and `UPPER_CASE` for configuration constants. Keep handlers feature-focused and register new routers in `main.py` in deliberate order because FSM matching is order-sensitive. Prefer async database and network operations; do not block the event loop.
+- PEP 8, four-space indent, type annotations on public interfaces.
+- Handlers stay feature-focused; prefer async DB/network operations — never block the event loop.
+- Tests use `unittest`, live flat in `tests/test_*.py`, and must not hit Telegram, real accounts, or credentials — mock Telethon/Pyrogram/bot/proxy calls. Cover failure paths and regressions alongside fixes.
 
-## Testing Guidelines
+## Commits & Security
 
-Tests use Python's `unittest` framework. Test utility and database logic independently from Telegram where possible. Name files `test_*.py` and tests `test_<behavior>`. Mock bot, Telethon, Pyrogram, and proxy calls; tests must not use real accounts or credentials. Include regression coverage with bug fixes and exercise both successful and failure paths.
+Short imperative subjects (`Fix country flag emojis`, `Improve account delivery...`), focused commits, behavioral/schema changes explained in the body.
 
-## Commit & Pull Request Guidelines
-
-Recent commits use short, imperative subjects such as `Fix country flag emojis` and `Improve account delivery and session management`. Keep each commit focused and explain behavioral or schema changes in its body. Pull requests should summarize the change, list verification commands, note environment or migration impacts, and link relevant issues. Include screenshots for user-visible Telegram flow changes.
-
-## Security & Configuration
-
-Never commit `.env`, session files, database files, bot tokens, API credentials, proxy passwords, or encryption keys. Update `.env.example` when adding configuration, using placeholders only. Treat logs and test fixtures as sensitive because phone numbers and session identifiers may appear in them.
+Never commit `.env`, session files, database files, tokens, or proxy credentials. Update `.env.example` (placeholders only) when adding config. Logs and fixtures may contain phone numbers/session IDs — treat them as sensitive.
