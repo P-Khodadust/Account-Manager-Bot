@@ -54,6 +54,7 @@ class CodeResult:
     phone_code_hash: str | None = None
     session_string: str | None = None
     user_info: dict | None = None
+    delivery_type: str | None = None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -119,8 +120,9 @@ async def _send_code_with_dc_migration(
     """Send a code request, following DC-migration errors.
 
     Telegram raises ``PhoneMigrateError`` when the phone number's home
-    data center differs from the one we connected to. Telethon does not
-    handle this itself — switch to the correct DC and retry once.
+    data center differs from the one we connected to. Telethon handles
+    this for unauthorized clients, but re-raises for authorized ones —
+    so handle it here as a safety net.
     """
     try:
         return await client.send_code_request(phone)
@@ -133,6 +135,21 @@ async def _send_code_with_dc_migration(
         await client._switch_dc(e.new_dc)
         await client.connect()
         return await client.send_code_request(phone)
+
+
+def _delivery_type(sent) -> str:
+    """Human-readable code delivery type from a SentCode response."""
+    t = getattr(sent, "type", None)
+    name = type(t).__name__ if t is not None else "unknown"
+    if "App" in name:
+        return "telegram-app"
+    if "Sms" in name:
+        return "sms"
+    if "Call" in name:
+        return "voice-call"
+    if "FlashCall" in name:
+        return "flash-call"
+    return name
 
 
 # Transient network errors worth a single retry during code requests
@@ -156,13 +173,27 @@ async def request_code(
     """
     client = create_client(proxy=proxy)
     result = CodeResult()
+    proxy_desc = f"{proxy.host}:{proxy.port}" if proxy else "direct"
 
     for attempt in (1, 2):
         try:
+            logger.info(
+                "Requesting login code for %s via %s (attempt %d)",
+                phone,
+                proxy_desc,
+                attempt,
+            )
             await client.connect()
             sent = await _send_code_with_dc_migration(client, phone)
             result.needs_code = True
             result.phone_code_hash = sent.phone_code_hash
+            result.delivery_type = _delivery_type(sent)
+            logger.info(
+                "Code request accepted for %s (delivery=%s, dc=%s)",
+                phone,
+                _delivery_type(sent),
+                client.session.dc_id,
+            )
             return client, result
 
         except FloodWaitError as e:

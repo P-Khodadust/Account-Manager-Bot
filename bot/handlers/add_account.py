@@ -133,10 +133,28 @@ async def on_phone_received(message: Message, state: FSMContext) -> None:
         await state.update_data(pending_session=pending_session)
         await client.disconnect()
 
+        delivery = result.delivery_type or "sms"
+        if delivery == "telegram-app":
+            code_hint = (
+                "\U0001f4f2 The code was sent <b>inside the Telegram "
+                "app</b> on that account (not by SMS).\n"
+                "Open the Telegram app logged into that number and "
+                "check the message from Telegram."
+            )
+        elif delivery in ("voice-call", "flash-call"):
+            code_hint = (
+                "\U0001f4de The code will arrive as a <b>phone call</b>, "
+                "not an SMS. Make sure this number can receive calls."
+            )
+        else:
+            code_hint = (
+                "\U0001f4e8 Please enter the login code you received\n"
+                "by <b>SMS</b> on that number."
+            )
+
         await message.answer(
             "\u2705 <b>Login code sent!</b>\n\n"
-            "\U0001f4e8 Please enter the login code you received\n"
-            "in Telegram on that account.\n\n"
+            f"{code_hint}\n\n"
             "\U0001f4a1 <i>The code is usually 5 digits.</i>",
             parse_mode="HTML",
             reply_markup=cancel_kb(),
