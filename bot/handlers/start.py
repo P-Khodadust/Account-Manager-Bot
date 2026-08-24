@@ -55,3 +55,9 @@ async def cb_main_menu(callback: CallbackQuery) -> None:
         ),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery) -> None:
+    """Silently acknowledge decorative buttons (e.g. page indicators)."""
+    await callback.answer()

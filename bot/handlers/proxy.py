@@ -112,7 +112,9 @@ async def on_proxy_details(message: Message, state: FSMContext) -> None:
         return
 
     username = parts[2].strip() if len(parts) > 2 else None
-    password = parts[3].strip() if len(parts) > 3 else None
+    # Passwords may contain colons — rejoin everything after the third
+    # separator instead of taking a single segment.
+    password = ":".join(parts[3:]).strip() if len(parts) > 3 else None
 
     proxy = await db.add_proxy(
         user_id=message.from_user.id,
@@ -183,6 +185,14 @@ async def cb_proxy_view(callback: CallbackQuery) -> None:
 @authorized
 async def cb_proxy_default(callback: CallbackQuery) -> None:
     proxy_id = int(callback.data.split(":")[1])
+    proxy = await db.get_proxy_by_id(proxy_id)
+
+    if not proxy or proxy.user_id != callback.from_user.id:
+        await callback.answer(
+            "\u26a0\ufe0f Proxy not found.", show_alert=True
+        )
+        return
+
     await db.set_default_proxy(proxy_id, callback.from_user.id)
     await callback.answer(
         "\u2705 Set as default proxy!", show_alert=True
@@ -215,7 +225,14 @@ async def cb_proxy_default(callback: CallbackQuery) -> None:
 @authorized
 async def cb_proxy_delete(callback: CallbackQuery) -> None:
     proxy_id = int(callback.data.split(":")[1])
-    await db.delete_proxy(proxy_id)
+    deleted = await db.delete_proxy(
+        proxy_id, user_id=callback.from_user.id
+    )
+    if not deleted:
+        await callback.answer(
+            "\u26a0\ufe0f Proxy not found.", show_alert=True
+        )
+        return
     await callback.answer("\U0001f5d1 Proxy deleted.", show_alert=True)
 
     # Refresh proxy menu

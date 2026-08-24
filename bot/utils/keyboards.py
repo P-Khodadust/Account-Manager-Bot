@@ -16,6 +16,28 @@ def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
+# Telegram allows at most 100 buttons per inline keyboard; keep a safe
+# margin for the back / navigation rows.
+PAGE_SIZE = 80
+
+
+def _pager_rows(
+    page: int,
+    total_pages: int,
+    page_cb: str,
+) -> list[list[InlineKeyboardButton]]:
+    rows: list[list[InlineKeyboardButton]] = []
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(_btn("◀️", f"{page_cb}:{page - 1}"))
+    nav.append(_btn(f"{page + 1}/{total_pages}", "noop"))
+    if page < total_pages - 1:
+        nav.append(_btn("▶️", f"{page_cb}:{page + 1}"))
+    if len(nav) > 1 or total_pages > 1:
+        rows.append(nav)
+    return rows
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Main Menu
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -55,6 +77,20 @@ def cancel_kb(back_cb: str | None = None) -> InlineKeyboardMarkup:
     cb = back_cb or "main_menu"
     return InlineKeyboardMarkup(
         inline_keyboard=[[_btn("\u274c  Cancel", cb)]]
+    )
+
+
+def op_cancel_kb() -> InlineKeyboardMarkup:
+    """Stop button for long-running bulk operations."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_btn("\u274c  Stop", "op_cancel")]]
+    )
+
+
+def noop_kb() -> InlineKeyboardMarkup:
+    """Keyboard whose only action is a harmless no-op button."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_btn("·", "noop")]]
     )
 
 
@@ -138,8 +174,15 @@ def date_select_kb(
     back_cb: str = "main_menu",
     counts: dict | None = None,
     show_logout_sessions: bool = False,
+    page: int = 0,
+    page_cb: str | None = None,
 ) -> InlineKeyboardMarkup:
     buttons = []
+    total_pages = 1
+    if page_cb and len(dates) > PAGE_SIZE:
+        total_pages = (len(dates) + PAGE_SIZE - 1) // PAGE_SIZE
+        page = max(0, min(page, total_pages - 1))
+        dates = dates[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     for d in dates:
         if isinstance(d, _dt.datetime):
             d = d.date()
@@ -153,6 +196,8 @@ def date_select_kb(
             row.append(_btn("✅", f"ck:{mode}:{iso}"))
             row.append(_btn("\U0001f5d1", f"tr:{mode}:{iso}"))
         buttons.append(row)
+    if page_cb:
+        buttons.extend(_pager_rows(page, total_pages, page_cb))
     buttons.append([_btn("\U0001f519  Back", back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -169,8 +214,15 @@ def account_list_kb(
     accounts,
     prefix: str = "acc",
     back_cb: str = "main_menu",
+    page: int = 0,
+    page_cb: str | None = None,
 ) -> InlineKeyboardMarkup:
     buttons = []
+    total_pages = 1
+    if page_cb and len(accounts) > PAGE_SIZE:
+        total_pages = (len(accounts) + PAGE_SIZE - 1) // PAGE_SIZE
+        page = max(0, min(page, total_pages - 1))
+        accounts = accounts[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     for acc in accounts:
         phone = acc.phone
         name = f" \u2014 {acc.first_name}" if acc.first_name else ""
@@ -184,6 +236,8 @@ def account_list_kb(
                 )
             ]
         )
+    if page_cb:
+        buttons.extend(_pager_rows(page, total_pages, page_cb))
     buttons.append([_btn("\U0001f519  Back", back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -520,6 +574,27 @@ def twofa_disable_confirm_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_btn("\u2705  Yes, disable 2FA", "twofa_disable_confirm")],
             [_btn("\u274c  Cancel", "twofa_menu")],
+        ]
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Statistics / Suspicious Accounts
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def statistics_kb(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    """Pager for paginated statistics text."""
+    buttons = _pager_rows(page, total_pages, "stat_page")
+    buttons.append([_btn("\U0001f519  Back", "main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def suspicious_clear_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("\U0001f9f9  Clear All Flags", "sus_clear")],
+            [_btn("\U0001f519  Back", "main_menu")],
         ]
     )
 

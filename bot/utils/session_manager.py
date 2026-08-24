@@ -403,7 +403,7 @@ async def start_code_listener(
     @client.on(events.NewMessage(from_users=777000))
     async def _on_login_code(event):  # type: ignore[misc]
         text = event.raw_text or ""
-        match = re.search(r"(\d{5,6})", text)
+        match = re.search(r"\b(\d{5,8})\b", text)
         if match and not code_event.is_set():
             captured["code"] = match.group(1)
             code_event.set()
@@ -1130,7 +1130,9 @@ async def validate_session(
         await client.connect()
         if await client.is_user_authorized():
             return "active"
-        return "invalid"
+        # Connected fine but the auth key is no longer logged in —
+        # the session was revoked elsewhere.
+        return "removed"
     except AuthKeyUnregisteredError:
         return "removed"
     except UserDeactivatedBanError:

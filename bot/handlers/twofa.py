@@ -19,10 +19,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from bot import database as db
+from bot.utils.cancellation import (
+    begin_operation,
+    handle_cancel_callback,
+    is_cancelled,
+)
 from bot.utils.crypto import decrypt_password, encrypt_password
 from bot.utils.decorators import authorized
 from bot.utils.keyboards import (
     cancel_kb,
+    op_cancel_kb,
     twofa_disable_confirm_kb,
     twofa_menu_kb,
 )
@@ -185,14 +191,19 @@ async def cb_twofa_enable_all(
         f"\u23f3 <b>Enabling 2FA\u2026</b>  0/{total}\n"
         "Please wait, this may take a while.",
         parse_mode="HTML",
+        reply_markup=op_cancel_kb(),
     )
     await callback.answer()
+    begin_operation(user_id)
 
     enabled = 0
     skipped = 0
     failed = 0
 
     for i, acc in enumerate(accounts):
+        if is_cancelled(user_id):
+            break
+
         proxy = await db.get_active_proxy(user_id)
 
         ok, reason = await enable_2fa_on_account(
@@ -221,19 +232,28 @@ async def cb_twofa_enable_all(
                     f"\u2705 {enabled}  \u23ed {skipped}  "
                     f"\u274c {failed}",
                     parse_mode="HTML",
+                    reply_markup=op_cancel_kb(),
                 )
             except Exception:
                 pass
 
         await asyncio.sleep(2)
 
+    processed = enabled + skipped + failed
+    done_note = (
+        f"\n\u274c <i>Stopped early \u2014 {processed}/{total} "
+        "processed.</i>"
+        if processed < total
+        else ""
+    )
     await callback.message.edit_text(
         "\u2705 <b>2FA Enable Complete</b>\n"
         "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f4ca  Total: <b>{total}</b>\n"
         f"\u2705  Enabled: <b>{enabled}</b>\n"
         f"\u23ed  Already had 2FA: <b>{skipped}</b>\n"
-        f"\u274c  Failed: <b>{failed}</b>",
+        f"\u274c  Failed: <b>{failed}</b>"
+        + done_note,
         parse_mode="HTML",
         reply_markup=twofa_menu_kb(has_password=True),
     )
@@ -286,14 +306,19 @@ async def cb_twofa_disable_confirm(
         f"\u23f3 <b>Disabling 2FA\u2026</b>  0/{total}\n"
         "Please wait, this may take a while.",
         parse_mode="HTML",
+        reply_markup=op_cancel_kb(),
     )
     await callback.answer()
+    begin_operation(user_id)
 
     disabled = 0
     skipped = 0
     failed = 0
 
     for i, acc in enumerate(accounts):
+        if is_cancelled(user_id):
+            break
+
         proxy = await db.get_active_proxy(user_id)
 
         ok, reason = await disable_2fa_on_account(
@@ -322,19 +347,28 @@ async def cb_twofa_disable_confirm(
                     f"\u274c {disabled}  \u23ed {skipped}  "
                     f"\u26a0\ufe0f {failed}",
                     parse_mode="HTML",
+                    reply_markup=op_cancel_kb(),
                 )
             except Exception:
                 pass
 
         await asyncio.sleep(2)
 
+    processed = disabled + skipped + failed
+    done_note = (
+        f"\n\u274c <i>Stopped early \u2014 {processed}/{total} "
+        "processed.</i>"
+        if processed < total
+        else ""
+    )
     await callback.message.edit_text(
         "\u274c <b>2FA Disable Complete</b>\n"
         "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f4ca  Total: <b>{total}</b>\n"
         f"\u274c  Disabled: <b>{disabled}</b>\n"
         f"\u23ed  Had no 2FA: <b>{skipped}</b>\n"
-        f"\u26a0\ufe0f  Failed: <b>{failed}</b>",
+        f"\u26a0\ufe0f  Failed: <b>{failed}</b>"
+        + done_note,
         parse_mode="HTML",
         reply_markup=twofa_menu_kb(has_password=True),
     )
@@ -367,14 +401,19 @@ async def cb_twofa_enable_new(
         "Detecting 2FA status and enabling\n"
         "on new accounts only.",
         parse_mode="HTML",
+        reply_markup=op_cancel_kb(),
     )
     await callback.answer()
+    begin_operation(user_id)
 
     enabled = 0
     skipped = 0
     failed = 0
 
     for i, acc in enumerate(accounts):
+        if is_cancelled(user_id):
+            break
+
         proxy = await db.get_active_proxy(user_id)
 
         # First check current 2FA status via API
@@ -413,19 +452,36 @@ async def cb_twofa_enable_new(
                     f"\u2705 {enabled}  \u23ed {skipped}  "
                     f"\u274c {failed}",
                     parse_mode="HTML",
+                    reply_markup=op_cancel_kb(),
                 )
             except Exception:
                 pass
 
         await asyncio.sleep(2)
 
+    processed = enabled + skipped + failed
+    done_note = (
+        f"\n\u274c <i>Stopped early \u2014 {processed}/{total} "
+        "processed.</i>"
+        if processed < total
+        else ""
+    )
     await callback.message.edit_text(
         "\U0001f195 <b>New-Account 2FA Complete</b>\n"
         "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
         f"\U0001f4ca  Total: <b>{total}</b>\n"
         f"\u2705  Enabled: <b>{enabled}</b>\n"
         f"\u23ed  Already had 2FA: <b>{skipped}</b>\n"
-        f"\u274c  Failed: <b>{failed}</b>",
+        f"\u274c  Failed: <b>{failed}</b>"
+        + done_note,
         parse_mode="HTML",
         reply_markup=twofa_menu_kb(has_password=True),
+    )
+
+
+@router.callback_query(F.data == "op_cancel")
+@authorized
+async def cb_op_cancel(callback: CallbackQuery) -> None:
+    await handle_cancel_callback(
+        callback, "\u274c Stopping after the current account\u2026"
     )

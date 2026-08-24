@@ -25,7 +25,7 @@ def authorized(func: Callable) -> Callable:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Find the update object (Message or CallbackQuery)
         event = args[0] if args else None
-        if event is None:
+        if event is None or getattr(event, "from_user", None) is None:
             return
 
         if isinstance(event, CallbackQuery):
@@ -59,7 +59,7 @@ def admin_only(func: Callable) -> Callable:
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         event = args[0] if args else None
-        if event is None:
+        if event is None or getattr(event, "from_user", None) is None:
             return
 
         if isinstance(event, CallbackQuery):

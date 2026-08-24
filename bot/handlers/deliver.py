@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
-import io
 import logging
 import tempfile
 import zipfile
@@ -28,12 +27,17 @@ from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    BufferedInputFile,
     CallbackQuery,
+    FSInputFile,
     Message,
 )
 
 from bot import database as db
+from bot.utils.cancellation import (
+    begin_operation,
+    handle_cancel_callback,
+    is_cancelled,
+)
 from bot.utils.country_detector import get_flag
 from bot.utils.decorators import authorized
 from bot.utils.keyboards import (
@@ -50,11 +54,13 @@ from bot.utils.keyboards import (
     logout_sessions_confirm_kb,
     main_menu_kb,
     next_confirm_kb,
+    op_cancel_kb,
     session_format_kb,
     status_actions_kb,
     status_export_format_kb,
     status_post_export_kb,
     status_remove_kb,
+    suspicious_clear_kb,
     trash_confirm_kb,
 )
 from bot.utils.session_manager import (
@@ -85,11 +91,17 @@ SESSION_FORMATS = {"telethon", "pyrogram", "tdata"}
 
 @dataclass
 class BulkZipResult:
-    """Archive bytes plus the exact accounts converted into it."""
+    """Archive on disk plus the exact accounts converted into it."""
 
-    data: bytes
+    file_path: Path
     successful_ids: list[int]
     failed_ids: list[int]
+
+    def cleanup(self) -> None:
+        try:
+            self.file_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 # ── FSM States ───────────────────────────────────────────────────────
@@ -192,8 +204,62 @@ async def cb_ind_country(
             back_cb="deliver_individual",
             counts=counts,
             show_logout_sessions=True,
+            page_cb="ind_dpage",
         ),
     )
+    await callback.answer()
+
+
+async def _render_ind_date_page(
+    callback: CallbackQuery,
+    state: FSMContext,
+    page: int,
+) -> None:
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    country = data.get("ind_country", "")
+
+    dates = await db.get_dates_for_country(user_id, country)
+    if not dates:
+        await callback.answer(
+            "\U0001f4ed No accounts in this category.", show_alert=True
+        )
+        return
+
+    counts: dict[str, int] = {}
+    for d in dates:
+        d_val = d.date() if isinstance(d, _dt.datetime) else d
+        accs = await db.get_accounts_filtered(user_id, country, d)
+        counts[d_val.isoformat()] = len(accs)
+
+    await callback.message.edit_text(
+        f"\U0001f4f1 <b>Individual Delivery</b> \u2192 "
+        f"<b>{country}</b>\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "Select a date category:",
+        parse_mode="HTML",
+        reply_markup=date_select_kb(
+            dates,
+            prefix="ind_date",
+            back_cb="deliver_individual",
+            counts=counts,
+            show_logout_sessions=True,
+            page=page,
+            page_cb="ind_dpage",
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("ind_dpage:"))
+@authorized
+async def cb_ind_date_page(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    try:
+        page = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        page = 0
+    await _render_ind_date_page(callback, state, page)
     await callback.answer()
 
 
@@ -233,6 +299,56 @@ async def cb_ind_date(
             accounts,
             prefix="ind_acc",
             back_cb=f"ind_country:{country}",
+            page_cb="acc_page",
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("acc_page:"))
+@authorized
+async def cb_account_list_page(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    try:
+        page = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        page = 0
+
+    data = await state.get_data()
+    country = data.get("ind_country", "")
+    date_iso = data.get("ind_date", "")
+    user_id = callback.from_user.id
+
+    if not country or not date_iso:
+        await callback.answer(
+            "\u26a0\ufe0f Selection expired. Please start again.",
+            show_alert=True,
+        )
+        return
+
+    date_obj = _dt.date.fromisoformat(date_iso)
+    accounts = await db.get_accounts_filtered(user_id, country, date_obj)
+    if not accounts:
+        await callback.answer(
+            "\U0001f4ed No accounts found.", show_alert=True
+        )
+        return
+
+    date_label = date_obj.strftime("%B %d, %Y")
+    await callback.message.edit_text(
+        f"\U0001f4f1 <b>Individual Delivery</b>\n"
+        f"{get_flag(country)} {country}  \u2022  \U0001f4c5 {date_label}\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"Found <b>{len(accounts)}</b> account(s).\n"
+        "Select an account to deliver:",
+        parse_mode="HTML",
+        reply_markup=account_list_kb(
+            accounts,
+            prefix="ind_acc",
+            back_cb=f"ind_country:{country}",
+            page=page,
+            page_cb="acc_page",
         ),
     )
     await callback.answer()
@@ -396,22 +512,45 @@ async def cb_logout_account(
             "\u2705 Account logged out and removed.", show_alert=True
         )
     else:
+        # Transient failure — do NOT remove a possibly-still-valid
+        # account from the active list.
         await callback.answer(
-            "\u26a0\ufe0f Logout failed. Account may already be logged out.",
+            "\u26a0\ufe0f Logout failed (network error?). "
+            "Account kept active \u2014 please retry.",
             show_alert=True,
         )
-        await db.deactivate_account(account_id)
 
     is_admin = await db.is_user_admin(callback.from_user.id)
-    await callback.message.edit_text(
-        "\U0001f6aa <b>Account Logged Out</b>\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        f"\U0001f4f1 {account.phone} has been logged out\n"
-        "and removed from your statistics.",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb(is_admin),
-    )
-    await state.clear()
+    if success:
+        await callback.message.edit_text(
+            "\U0001f6aa <b>Account Logged Out</b>\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            f"\U0001f4f1 {account.phone} has been logged out\n"
+            "and removed from your statistics.",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(is_admin),
+        )
+        await state.clear()
+    else:
+        await callback.message.edit_text(
+            "\u26a0\ufe0f <b>Logout Failed</b>\n"
+            "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            f"Could not log out of {account.phone}.\n"
+            "The account remains active \u2014 try again shortly.",
+            parse_mode="HTML",
+            reply_markup=account_actions_kb(
+                account_id,
+                has_next=await _has_next_from_state(state),
+            ),
+        )
+
+
+async def _has_next_from_state(state: FSMContext) -> bool:
+    """Whether a 'Next' account exists after the current position."""
+    data = await state.get_data()
+    account_ids = data.get("ind_account_ids", [])
+    current_idx = data.get("ind_current_idx", 0)
+    return bool(account_ids) and current_idx < len(account_ids) - 1
 
 
 # ── "Next" button — sequential navigation ────────────────────────────
@@ -459,8 +598,8 @@ async def cb_next_logout(
 
     if account and account.owner_id == callback.from_user.id:
         proxy = await db.get_active_proxy(callback.from_user.id)
-        await logout_account(account.session_string, proxy=proxy)
-        await db.deactivate_account(account_id)
+        if await logout_account(account.session_string, proxy=proxy):
+            await db.deactivate_account(account_id)
 
     await _move_to_next_account(callback, state)
 
@@ -655,6 +794,58 @@ async def cb_bulk_country(
             back_cb=f"bulk_format:{fmt}",
             counts=counts,
             show_logout_sessions=True,
+            page_cb="bulk_dpage",
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bulk_dpage:"))
+@authorized
+async def cb_bulk_date_page(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    try:
+        page = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        page = 0
+
+    data = await state.get_data()
+    country = data.get("bulk_country", "")
+    fmt = data.get("bulk_format", "telethon")
+    user_id = callback.from_user.id
+
+    dates = await db.get_dates_for_country(user_id, country)
+    if not dates:
+        await callback.answer(
+            "\U0001f4ed No accounts in this category.", show_alert=True
+        )
+        return
+
+    counts: dict[str, int] = {}
+    for d in dates:
+        d_val = d.date() if isinstance(d, _dt.datetime) else d
+        accs = await db.get_accounts_filtered(user_id, country, d)
+        counts[d_val.isoformat()] = len(accs)
+
+    fmt_label = "Telethon" if fmt == "telethon" else (
+        "TData" if fmt == "tdata" else "Pyrogram"
+    )
+
+    await callback.message.edit_text(
+        f"\U0001f4c1 <b>Bulk Delivery</b> \u2014 "
+        f"<b>{fmt_label}</b> \u2192 <b>{country}</b>\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "Select a date category:",
+        parse_mode="HTML",
+        reply_markup=date_select_kb(
+            dates,
+            prefix="bulk_date",
+            back_cb=f"bulk_format:{fmt}",
+            counts=counts,
+            show_logout_sessions=True,
+            page=page,
+            page_cb="bulk_dpage",
         ),
     )
     await callback.answer()
@@ -770,6 +961,7 @@ async def on_bulk_quantity(message: Message, state: FSMContext) -> None:
     archive = await _build_bulk_zip(selected, fmt, proxy)
 
     if not archive.successful_ids:
+        archive.cleanup()
         await message.answer(
             "❌ No session files could be converted. "
             "No accounts were removed.",
@@ -790,7 +982,7 @@ async def on_bulk_quantity(message: Message, state: FSMContext) -> None:
 
     try:
         await message.answer_document(
-            BufferedInputFile(archive.data, filename=zip_filename),
+            FSInputFile(archive.file_path, filename=zip_filename),
             caption=(
                 "\U0001f4c1 <b>Session Files Delivered!</b>\n\n"
                 f"\U0001f4e6  Format: <b>{fmt_label}</b>\n"
@@ -813,6 +1005,8 @@ async def on_bulk_quantity(message: Message, state: FSMContext) -> None:
             reply_markup=cancel_kb(cancel_back),
         )
         return
+    finally:
+        archive.cleanup()
 
     await _post_delivery_prompt(
         message, state, archive.successful_ids
@@ -829,21 +1023,35 @@ async def _build_bulk_zip(
     fmt: str,
     proxy=None,
 ) -> BulkZipResult:
-    """Build an archive and report exactly which conversions succeeded."""
-    if fmt not in SESSION_FORMATS:
-        return BulkZipResult(b"", [], [acc.id for acc in accounts])
+    """Build an archive on disk (streamed, not held in RAM) and report
+    exactly which conversions succeeded."""
+    fd = tempfile.NamedTemporaryFile(
+        suffix=".zip", delete=False
+    )
+    zip_path = Path(fd.name)
+    fd.close()
 
-    zip_buffer = io.BytesIO()
+    if fmt not in SESSION_FORMATS:
+        return BulkZipResult(zip_path, [], [acc.id for acc in accounts])
+
     successful_ids: list[int] = []
     failed_ids: list[int] = []
     used_names: set[str] = set()
 
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for acc in accounts:
             safe_phone = acc.phone.replace("+", "").replace(" ", "")
             converted = False
             try:
-                if fmt == "telethon":
+                if fmt == "pyrogram" and not acc.tg_user_id:
+                    # A Pyrogram session without the real user id cannot
+                    # be resumed by buyers — treat as failed conversion.
+                    logger.warning(
+                        "Skipping Pyrogram export for %s "
+                        "(no tg_user_id stored)",
+                        acc.phone,
+                    )
+                elif fmt == "telethon":
                     with tempfile.NamedTemporaryFile(
                         suffix=".session", delete=False
                     ) as tmp:
@@ -926,10 +1134,7 @@ async def _build_bulk_zip(
                 successful_ids.append(acc.id)
             else:
                 failed_ids.append(acc.id)
-    zip_buffer.seek(0)
-    return BulkZipResult(
-        zip_buffer.getvalue(), successful_ids, failed_ids
-    )
+    return BulkZipResult(zip_path, successful_ids, failed_ids)
 
 
 def _unique_archive_name(
@@ -1035,14 +1240,19 @@ async def cb_logout_sessions_yes(
     await callback.message.edit_text(
         f"\u23f3 <b>Terminating sessions\u2026</b>  0/{total}",
         parse_mode="HTML",
+        reply_markup=op_cancel_kb(),
     )
     await callback.answer()
+    begin_operation(user_id)
 
     success_count = 0
     terminated_total = 0
     failed_count = 0
 
     for i, acc in enumerate(accounts):
+        if is_cancelled(user_id):
+            break
+
         proxy = await db.get_active_proxy(user_id)
 
         ok, terminated, err = await terminate_other_sessions(
@@ -1063,15 +1273,20 @@ async def cb_logout_sessions_yes(
                     f"\u23f3 <b>Terminating sessions\u2026</b>  "
                     f"{i + 1}/{total}",
                     parse_mode="HTML",
+                    reply_markup=op_cancel_kb(),
                 )
             except Exception:
                 pass
 
         await asyncio.sleep(1.5)
 
+    stopped_early = success_count + failed_count < total
     date_label = date_obj.strftime("%B %d, %Y")
     is_admin = await db.is_user_admin(user_id)
 
+    done_note = (
+        "\n\u274c <i>Stopped early by user.</i>" if stopped_early else ""
+    )
     await callback.message.edit_text(
         "\u2705 <b>Sessions Terminated</b>\n"
         "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
@@ -1083,9 +1298,17 @@ async def cb_logout_sessions_yes(
             if failed_count
             else ""
         )
-        + "\n\U0001f4f1 Bot remains logged in to all accounts.",
+        + f"{done_note}\n\U0001f4f1 Bot remains logged in to all accounts.",
         parse_mode="HTML",
         reply_markup=main_menu_kb(is_admin),
+    )
+
+
+@router.callback_query(F.data == "op_cancel")
+@authorized
+async def cb_op_cancel(callback: CallbackQuery) -> None:
+    await handle_cancel_callback(
+        callback, "\u274c Stopping after the current account\u2026"
     )
 
 
@@ -1230,15 +1453,24 @@ async def cb_bd_classify_yes(
         return
 
     await callback.answer()
-    counts, breakdown = await _run_status_sweep(callback, ids)
+    counts, breakdown, stopped_early = await _run_status_sweep(
+        callback, ids
+    )
     await state.update_data(
         status_sweep_ids=ids,
         status_counts=counts,
         status_breakdown=breakdown,
     )
 
+    note = (
+        "\n\n\u274c <i>Sweep stopped early \u2014 remaining accounts "
+        "not checked.</i>"
+        if stopped_early
+        else ""
+    )
     await callback.message.edit_text(
         _format_status_summary(counts, breakdown)
+        + note
         + "\n\nExport a status group or choose a deliberate "
         "removal action below.",
         parse_mode="HTML",
@@ -1385,8 +1617,11 @@ def _format_progress_bar(done: int, total: int, width: int = 20) -> str:
 async def _run_status_sweep(
     callback: CallbackQuery,
     account_ids: list[int],
-) -> tuple[dict[str, int], list[tuple[str, str]]]:
-    """Classify accounts without changing their active state."""
+) -> tuple[dict[str, int], list[tuple[str, str]], bool]:
+    """Classify accounts without changing their active state.
+
+    Returns ``(counts, breakdown, stopped_early)``.
+    """
     total = len(account_ids)
     counts = {"green": 0, "yellow": 0, "red": 0, "unknown": 0}
     breakdown: list[tuple[str, str]] = []
@@ -1398,7 +1633,14 @@ async def _run_status_sweep(
     )
     accounts_by_id = {account.id: account for account in accounts}
 
+    begin_operation(user_id)
+    stopped_early = False
+
     for i, acc_id in enumerate(account_ids):
+        if is_cancelled(user_id):
+            stopped_early = True
+            break
+
         acc = accounts_by_id.get(acc_id)
         if not acc:
             counts["unknown"] += 1
@@ -1434,12 +1676,13 @@ async def _run_status_sweep(
                     f"Checked: <b>{done}/{total}</b>\n"
                     f"<code>{bar}</code>",
                     parse_mode="HTML",
+                    reply_markup=op_cancel_kb(),
                 )
             except Exception:
                 pass
         await asyncio.sleep(1.0)
 
-    return counts, breakdown
+    return counts, breakdown, stopped_early
 
 
 def _format_status_summary(
@@ -1594,6 +1837,7 @@ async def cb_status_export_format(
     proxy = await db.get_active_proxy(callback.from_user.id)
     archive = await _build_bulk_zip(accounts, fmt, proxy)
     if not archive.successful_ids:
+        archive.cleanup()
         await _refresh_status_actions(
             callback,
             state,
@@ -1613,7 +1857,7 @@ async def cb_status_export_format(
     }[fmt]
     try:
         await callback.message.answer_document(
-            BufferedInputFile(archive.data, filename=filename),
+            FSInputFile(archive.file_path, filename=filename),
             caption=(
                 f"📦 <b>{color.title()} Accounts</b>\n\n"
                 f"Status: <b>{color.title()}</b>\n"
@@ -1641,6 +1885,8 @@ async def cb_status_export_format(
             ),
         )
         return
+    finally:
+        archive.cleanup()
     await state.update_data(
         status_last_export_ids=archive.successful_ids,
         status_last_export_color=color,
@@ -1840,14 +2086,23 @@ async def cb_status_check(
     await callback.answer()
 
     ids = [a.id for a in accounts]
-    counts, breakdown = await _run_status_sweep(callback, ids)
+    counts, breakdown, stopped_early = await _run_status_sweep(
+        callback, ids
+    )
     await state.update_data(
         status_sweep_ids=ids,
         status_counts=counts,
         status_breakdown=breakdown,
     )
+    note = (
+        "\n\n\u274c <i>Sweep stopped early \u2014 remaining accounts "
+        "not checked.</i>"
+        if stopped_early
+        else ""
+    )
     await callback.message.edit_text(
         _format_status_summary(counts, breakdown)
+        + note
         + "\n\nExport a status group or choose a deliberate "
         "removal action below.",
         parse_mode="HTML",
@@ -1930,14 +2185,20 @@ async def cb_trash_yes(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(
         f"⏳ <b>Cleaning chats…</b>  0/{total}",
         parse_mode="HTML",
+        reply_markup=op_cancel_kb(),
     )
     await callback.answer()
+    begin_operation(user_id)
 
     proxy = await db.get_active_proxy(user_id)
     chats_total = 0
     groups_total = 0
     err_total = 0
+    processed = 0
     for i, acc in enumerate(accounts):
+        if is_cancelled(user_id):
+            break
+
         try:
             chats, groups, errs = (
                 await delete_personal_chats_and_leave_groups(
@@ -1956,21 +2217,28 @@ async def cb_trash_yes(callback: CallbackQuery, state: FSMContext) -> None:
                 await callback.message.edit_text(
                     f"⏳ <b>Cleaning chats…</b>  {i + 1}/{total}",
                     parse_mode="HTML",
+                    reply_markup=op_cancel_kb(),
                 )
             except Exception:
                 pass
         await asyncio.sleep(1.5)
+        processed = i + 1
 
     is_admin = await db.is_user_admin(user_id)
     suspicious = await db.get_suspicious_accounts(user_id)
+    done_note = (
+        f"\n❌ <i>Stopped early after {processed}/{total} accounts.</i>"
+        if processed < total
+        else ""
+    )
     await callback.message.edit_text(
         "✅ <b>Bulk Chat Cleanup Complete</b>\n"
         "━━━━━━━━━━━━\n\n"
-        f"📂  Accounts processed: <b>{total}</b>\n"
+        f"📂  Accounts processed: <b>{min(processed, total)}</b>\n"
         f"🧹  1:1 chats deleted: <b>{chats_total}</b>\n"
         f"👥  Groups/channels left: <b>{groups_total}</b>\n"
         + (f"⚠️  Errors: <b>{err_total}</b>\n" if err_total else "")
-        + "\nThe bot remains logged in to every account.",
+        + f"{done_note}\nThe bot remains logged in to every account.",
         parse_mode="HTML",
         reply_markup=main_menu_kb(is_admin, has_suspicious=bool(suspicious)),
     )
@@ -2029,6 +2297,24 @@ async def cb_suspicious_list(
     await callback.message.edit_text(
         "\n".join(lines),
         parse_mode="HTML",
-        reply_markup=main_menu_kb(is_admin, has_suspicious=True),
+        reply_markup=suspicious_clear_kb(),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "sus_clear")
+@authorized
+async def cb_sus_clear(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    cleared = await db.clear_suspicious_flags(user_id)
+    is_admin = await db.is_user_admin(user_id)
+    await callback.answer(
+        f"🧹 Cleared flags on {cleared} account(s).", show_alert=True
+    )
+    await callback.message.edit_text(
+        "❗ <b>Suspicious Accounts</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        f"🧹 Cleared flags on <b>{cleared}</b> account(s).",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(is_admin),
+    )

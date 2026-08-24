@@ -15,6 +15,7 @@ the counter is incremented.
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 import zipfile
 from pathlib import Path
@@ -82,13 +83,14 @@ async def cb_add_account(
 @router.message(AddAccountStates.waiting_phone)
 @authorized
 async def on_phone_received(message: Message, state: FSMContext) -> None:
-    phone = message.text.strip()
+    # Normalise and validate as E.164: optional '+', 8-15 digits.
+    raw = message.text.strip()
+    phone = "+" + raw.lstrip("+").replace(" ", "").replace("-", "")
 
-    # Basic validation
-    if not phone.startswith("+") or len(phone) < 8:
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
         await message.answer(
             "\u26a0\ufe0f Please enter a valid phone number starting "
-            "with <b>+</b>\n"
+            "with <b>+</b> (digits only)\n"
             "Example: <code>+14155552671</code>",
             parse_mode="HTML",
             reply_markup=cancel_kb(),
@@ -411,6 +413,18 @@ async def on_zip_received(message: Message, state: FSMContext) -> None:
         await message.answer(
             "⚠️ Please send a ZIP archive (.zip) of Telethon "
             "<code>.session</code> files.",
+            parse_mode="HTML",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    # Refuse oversized uploads to protect server disk space.
+    _MAX_ZIP_BYTES = 200 * 1024 * 1024  # 200 MB
+    if (doc.file_size or 0) > _MAX_ZIP_BYTES:
+        await message.answer(
+            "❌ That archive is too large "
+            f"({doc.file_size / 1024 / 1024:.0f} MB). "
+            "The limit is <b>200 MB</b>.",
             parse_mode="HTML",
             reply_markup=cancel_kb(),
         )

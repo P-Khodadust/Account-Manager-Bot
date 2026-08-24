@@ -79,7 +79,7 @@ class Account(Base):
     first_name = Column(String(255), nullable=True)
     username = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True)
-    status = Column(String(16), default="active")
+    status = Column(String(32), default="active")
     has_2fa = Column(Boolean, default=False)
     spam_status = Column(String(8), default="unknown")
     spam_checked_at = Column(DateTime, nullable=True)
@@ -142,9 +142,60 @@ async def run_migrations() -> None:
         await conn.run_sync(_migrate_accounts_table)
         await conn.run_sync(_add_twofa_columns)
         await conn.run_sync(_add_health_columns)
+        await conn.run_sync(_widen_status_column)
     await _migrate_area_codes()
     await _restore_auto_removed_spam_accounts()
     logger.info("Migrations complete.")
+
+
+def _widen_status_column(connection) -> None:
+    """Widen accounts.status from VARCHAR(16) to VARCHAR(32).
+
+    'delivered_removed' is 17 characters — SQLite never enforced the old
+    width, but PostgreSQL would reject inserts. Rebuilds the table with
+    the same DDL except the widened column.
+    """
+    insp = inspect(connection)
+
+    if "accounts" not in insp.get_table_names():
+        return
+
+    status_col = next(
+        (
+            c
+            for c in insp.get_columns("accounts")
+            if c["name"] == "status"
+        ),
+        None,
+    )
+    if status_col is None or "VARCHAR(16)" not in str(
+        status_col.get("type", "")
+    ).upper():
+        return  # nothing to do (fresh DBs already use VARCHAR(32))
+
+    create_sql = connection.exec_driver_sql(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type='table' AND name='accounts'"
+    ).scalar()
+    if not create_sql:
+        return
+
+    new_sql = create_sql.replace(
+        "accounts", "accounts_new"
+    ).replace("VARCHAR(16)", "VARCHAR(32)")
+
+    logger.info("Widening accounts.status to VARCHAR(32)...")
+
+    connection.exec_driver_sql(new_sql)
+    columns = ", ".join(c["name"] for c in insp.get_columns("accounts"))
+    connection.exec_driver_sql(
+        f"INSERT INTO accounts_new ({columns}) "
+        f"SELECT {columns} FROM accounts"
+    )
+    connection.exec_driver_sql("DROP TABLE accounts")
+    connection.exec_driver_sql(
+        "ALTER TABLE accounts_new RENAME TO accounts"
+    )
 
 
 def _migrate_accounts_table(connection) -> None:
@@ -185,7 +236,7 @@ def _migrate_accounts_table(connection) -> None:
             "  first_name VARCHAR(255),"
             "  username VARCHAR(255),"
             "  is_active BOOLEAN DEFAULT 1,"
-            "  status VARCHAR(16) DEFAULT 'active',"
+            "  status VARCHAR(32) DEFAULT 'active',"
             "  created_at DATETIME"
             ")"
         )
@@ -760,6 +811,23 @@ async def mark_suspicious(account_id: int, suspicious: bool = True) -> None:
         await session.commit()
 
 
+async def clear_suspicious_flags(user_id: int) -> int:
+    """Reset is_suspicious on every flagged account of this owner."""
+    async with async_session() as session:
+        result = await session.execute(
+            update(Account)
+            .where(
+                and_(
+                    Account.owner_id == user_id,
+                    Account.is_suspicious == True,  # noqa: E712
+                )
+            )
+            .values(is_suspicious=False)
+        )
+        await session.commit()
+        return result.rowcount or 0
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Proxies
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -836,27 +904,41 @@ async def get_default_proxy(user_id: int) -> Proxy | None:
         return result.scalar_one_or_none()
 
 
-async def set_default_proxy(proxy_id: int, user_id: int) -> None:
+async def set_default_proxy(proxy_id: int, user_id: int) -> bool:
+    """Mark one of *user_id's* proxies as default. Returns False when the
+    proxy does not belong to this user."""
     async with async_session() as session:
         await session.execute(
             update(Proxy)
             .where(Proxy.user_id == user_id)
             .values(is_default=False)
         )
-        await session.execute(
+        result = await session.execute(
             update(Proxy)
-            .where(Proxy.id == proxy_id)
+            .where(
+                and_(
+                    Proxy.id == proxy_id,
+                    Proxy.user_id == user_id,
+                )
+            )
             .values(is_default=True)
         )
         await session.commit()
+        return result.rowcount > 0
 
 
-async def delete_proxy(proxy_id: int) -> None:
+async def delete_proxy(proxy_id: int, user_id: int | None = None) -> bool:
+    """Delete a proxy, optionally scoped to its owner. Returns whether a
+    row was removed."""
     async with async_session() as session:
-        await session.execute(
-            delete(Proxy).where(Proxy.id == proxy_id)
+        filters = [Proxy.id == proxy_id]
+        if user_id is not None:
+            filters.append(Proxy.user_id == user_id)
+        result = await session.execute(
+            delete(Proxy).where(and_(*filters))
         )
         await session.commit()
+        return result.rowcount > 0
 
 
 async def get_proxy_count(user_id: int) -> int:
@@ -930,21 +1012,18 @@ async def get_active_proxy(user_id: int) -> Proxy | None:
 
 
 async def increment_rotation_counter(user_id: int) -> None:
+    """Atomically bump the rotation counter (safe under concurrency)."""
+    await get_user_settings(user_id)  # ensures row exists
     async with async_session() as session:
-        result = await session.execute(
-            select(UserSettings).where(UserSettings.user_id == user_id)
-        )
-        settings = result.scalar_one_or_none()
-        if settings:
-            await session.execute(
-                update(UserSettings)
-                .where(UserSettings.user_id == user_id)
-                .values(
-                    proxy_rotation_counter=settings.proxy_rotation_counter
-                    + 1
-                )
+        await session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(
+                proxy_rotation_counter=UserSettings.proxy_rotation_counter
+                + 1
             )
-            await session.commit()
+        )
+        await session.commit()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
